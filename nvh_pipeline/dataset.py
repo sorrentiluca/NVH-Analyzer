@@ -82,17 +82,34 @@ def list_segment_files(seg_dir: str) -> list:
                   for p in glob.glob(os.path.join(seg_dir, SEG_GLOB)))
 
 
+# Schema cache keyed by (path, mtime): stages ask for a file's columns two or
+# three times per file per run; the footer read is cheap but not free, and the
+# mtime key keeps the cache correct if a file is rewritten mid-session.
+_SCHEMA_CACHE: dict = {}
+
+
 def file_columns(seg_dir: str, path: str) -> list:
     """Column names of one parquet from its footer — no data pages read."""
     full = _resolve(seg_dir, path)
     try:
+        key = (full, os.path.getmtime(full))
+    except OSError:
+        key = None
+    if key is not None and key in _SCHEMA_CACHE:
+        return list(_SCHEMA_CACHE[key])
+    try:
         import pyarrow.parquet as pq
-        return list(pq.read_schema(full).names)
+        cols = list(pq.read_schema(full).names)
     except Exception:
         try:
-            return list(pd.read_parquet(full).columns)
+            cols = list(pd.read_parquet(full).columns)
         except Exception:
-            return []
+            cols = []
+    if key is not None and cols:
+        if len(_SCHEMA_CACHE) > 4096:          # bound the cache for long sessions
+            _SCHEMA_CACHE.clear()
+        _SCHEMA_CACHE[key] = cols
+    return list(cols)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

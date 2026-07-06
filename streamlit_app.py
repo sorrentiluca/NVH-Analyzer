@@ -58,6 +58,17 @@ def _save_settings(d: dict) -> None:
         pass
 
 
+def _remember_root(path: str) -> None:
+    """Persist the active results root AND keep a recent-projects list, so
+    switching between distinct projects/datasets is one click, not retyping."""
+    s = _load_settings()
+    recent = [r for r in s.get("recent_roots", []) if r and r != path]
+    recent.insert(0, path)
+    s["recent_roots"] = recent[:8]
+    s["results_root"] = path
+    _save_settings(s)
+
+
 import streamlit as st
 
 from nvh_pipeline.app_helpers import (
@@ -362,6 +373,73 @@ def _filter_bar(spec: dict, *, key: str) -> dict:
     return active
 
 
+def _render_stepper(steps: list) -> None:
+    """The linear workflow progress bar pinned under the title.
+
+    ``steps`` is a list of ``(label, state)`` where state is 'done', 'active'
+    or 'todo'.  Completed steps render as green checkmark nodes, the active
+    step as an accent-ringed node, and the nodes are joined by connector lines
+    that turn green once the step before them is complete — so the user always
+    sees where they are between data import, processing and review.
+    """
+    seg = []
+    for i, (label, state) in enumerate(steps):
+        if i:
+            prev_done = steps[i - 1][1] == "done"
+            seg.append(
+                f'<div class="ws-step-line{" done" if prev_done else ""}">'
+                "</div>")
+        icon = "✓" if state == "done" else str(i + 1)
+        seg.append(
+            f'<div class="ws-step {state}">'
+            f'  <div class="ws-step-dot">{icon}</div>'
+            f'  <div class="ws-step-label">{label}</div>'
+            f"</div>")
+    st.markdown(
+        f"""
+        <style>
+          .ws-stepper {{
+              display: flex; align-items: flex-start; gap: 0;
+              margin: 0.2rem 0 1.0rem 0;
+          }}
+          .ws-step {{
+              display: flex; flex-direction: column; align-items: center;
+              gap: 0.35rem; min-width: 84px;
+          }}
+          .ws-step-dot {{
+              width: 30px; height: 30px; border-radius: 50%;
+              display: flex; align-items: center; justify-content: center;
+              font-size: 0.85rem; font-weight: 650;
+              border: 2px solid {_HAIRLINE};
+              background: {_SURFACE}; color: {_MUTED};
+              transition: background .2s ease, border-color .2s ease;
+          }}
+          .ws-step.done .ws-step-dot {{
+              background: #12805C; border-color: #12805C; color: #FFFFFF;
+          }}
+          .ws-step.active .ws-step-dot {{
+              border-color: {_ACCENT}; color: {_ACCENT};
+              box-shadow: 0 0 0 3px rgba(30, 77, 58, 0.15);
+          }}
+          .ws-step-label {{
+              font-size: 0.78rem; color: {_MUTED}; text-align: center;
+              max-width: 110px; line-height: 1.25;
+          }}
+          .ws-step.done .ws-step-label {{ color: #12805C; font-weight: 600; }}
+          .ws-step.active .ws-step-label {{ color: {_ACCENT}; font-weight: 650; }}
+          .ws-step-line {{
+              flex: 1 1 auto; height: 2px; background: {_HAIRLINE};
+              margin-top: 14px; min-width: 24px;
+              transition: background .2s ease;
+          }}
+          .ws-step-line.done {{ background: #12805C; }}
+        </style>
+        <div class="ws-stepper">{''.join(seg)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -421,6 +499,32 @@ def _dir_mtime(path: str) -> float:
         return os.path.getmtime(path)
     except OSError:
         return 0.0
+
+
+def _runs_fingerprint(root: str) -> tuple:
+    """Cheap change-detector for the run library: (run name, manifest mtime)
+    pairs from one scandir pass — no JSON parsing.  Used as the cache key so
+    a library of hundreds of runs re-parses manifests only when one changes."""
+    try:
+        out = []
+        with os.scandir(root) as it:
+            for e in it:
+                if e.is_dir():
+                    try:
+                        out.append((e.name, os.path.getmtime(
+                            os.path.join(e.path, "manifest.json"))))
+                    except OSError:
+                        pass
+        return tuple(sorted(out))
+    except OSError:
+        return ()
+
+
+@st.cache_data(show_spinner=False)
+def _scan_runs_cached(root: str, _fp: tuple) -> list:
+    """Cached run-library scan; ``_fp`` (the fingerprint) busts the cache the
+    moment a run is added, re-run or deleted."""
+    return _scan_past_runs(root)
 
 
 # PowerShell body for the folder picker. Opens the MODERN Windows folder dialog
@@ -635,7 +739,7 @@ def _browse_native(browse_key: str, target_key: str) -> None:
         st.session_state[target_key] = path
         st.session_state[browse_key] = path
         if target_key == "results_root_input":
-            _save_settings({"results_root": path})
+            _remember_root(path)
 
 
 def _auto_name_run(parts_key: str = "_detected_parts",
@@ -1277,8 +1381,7 @@ with st.sidebar:
                    help="Open the Windows folder picker.")
         if _b2.button("Save", width='stretch', disabled=_busy,
                       help="Save and use this results folder."):
-            _save_settings(
-                {"results_root": st.session_state.get("results_root_input", "")})
+            _remember_root(st.session_state.get("results_root_input", ""))
             st.session_state["_edit_results_root"] = False
             st.toast("Results root saved.")
             st.rerun()
@@ -1292,6 +1395,26 @@ with st.sidebar:
                      help="Choose a different results folder."):
             st.session_state["_edit_results_root"] = True
             st.rerun()
+
+        # One-click switching between distinct projects / datasets: every
+        # results root ever saved is remembered, so an engineer juggling
+        # several test campaigns hops between them without retyping paths.
+        _recent = [r for r in _settings.get("recent_roots", [])
+                   if r and r != _rr and os.path.isdir(r)]
+        if _recent:
+            def _switch_project() -> None:
+                sel = st.session_state.get("project_switcher")
+                if sel and sel != st.session_state.get("results_root_input"):
+                    st.session_state["results_root_input"] = sel
+                    st.session_state["opened_runs"] = []
+                    _remember_root(sel)
+
+            st.selectbox(
+                "Switch project", [_rr] + _recent, key="project_switcher",
+                disabled=_busy, on_change=_switch_project,
+                format_func=lambda p: os.path.basename(p.rstrip("\\/")) or p,
+                help="Jump to another results folder you've used before. "
+                     "Each project keeps its own run library.")
 
     results_root = st.session_state.get("results_root_input", "")
 
@@ -1321,7 +1444,8 @@ data_dir = st.session_state.get("data_dir_input", "").strip()
 _dd = data_dir
 detected = _discover(_dd, _dir_mtime(_dd)) if os.path.isdir(_dd) else None
 headers = _inspect(_dd, _dir_mtime(_dd)) if os.path.isdir(_dd) else None
-past_runs = _scan_past_runs(results_root.strip())
+past_runs = _scan_runs_cached(results_root.strip(),
+                              _runs_fingerprint(results_root.strip()))
 
 # Continuous mode: the single CSV drives column detection (no folder scan).
 single_file_path = st.session_state.get("single_file_input", "").strip()
@@ -1359,6 +1483,37 @@ run_name: str = ""
 # Continuous-mode form values (overwritten by widgets when that mode is active).
 signal_label_val: str = d.signal_label
 nominal_rpm_val = None
+
+# ── Workflow stepper — the linear guide across the whole journey ──────────────
+# States are derived from real readiness (not which tab is open), so the nodes
+# turn into green checkmarks exactly when a step is genuinely complete.
+_step1_done = bool(
+    (_continuous and _single_valid and _cols_avail)
+    or (not _continuous and detected and detected.get("matched", 0) > 0))
+_step2_done = bool(_step1_done and _cols_avail)
+_has_open_runs = any(os.path.isfile(m)
+                     for m in st.session_state.get("opened_runs", []))
+_step3_done = bool(_has_open_runs and not _busy)
+_step4_done = bool(_has_open_runs and not _busy)
+
+_states = []
+for _done in (_step1_done, _step2_done, _step3_done, _step4_done):
+    _states.append("done" if _done else "todo")
+if _busy:
+    _states[2] = "active"
+else:
+    for _i, _s in enumerate(_states):
+        if _s == "todo":
+            _states[_i] = "active"
+            break
+
+st.markdown("## NVH Analyzer")
+_render_stepper([
+    ("Import data", _states[0]),
+    ("Map signals", _states[1]),
+    ("Run analysis", _states[2]),
+    ("Review results", _states[3]),
+])
 
 # ── Primary navigation — immediately below the title ──────────────────────────
 tab_define, tab_run, tab_review = st.tabs(
@@ -1774,20 +1929,42 @@ with tab_run:
               help="Segmentation + 4 analysis modules. "
                    "Add Handover Report for deliverable tables.")
 
+    # ── Analysis tiles — one card per module, pick by checking its tile ───────
+    _STAGE_TILES = {
+        "segment":    ("🧩", "Split every raw recording into individual "
+                             "strokes. Runs first — every analysis reads its "
+                             "output."),
+        "vibration":  ("📈", "Overall shake level (RMS) per stroke — the "
+                             "headline metal-vs-plastic comparison."),
+        "efficiency": ("⚙️", "Drive torque and an efficiency proxy per speed "
+                             "class — the mechanical cost of each design."),
+        "order":      ("🎯", "Vibration mapped to shaft position — pinpoints "
+                             "ball-pass content vs ordinary shaft orders."),
+        "envelope":   ("🔔", "Bearing-impact detection — demodulates the "
+                             "resonance that repetitive defects ring."),
+        "report":     ("📋", "Deliverable tables: sample summary, actuation "
+                             "snapshot and the cross-stage one-pager."),
+    }
     with st.container(border=True):
         st.subheader("Analyses")
+        st.caption("Pick the analyses to run. The analysis modules run in "
+                   "parallel after data preparation.")
         stage_labels = {k: v["label"] for k, v in STAGES.items()}
         # Continuous mode has no torque/angle, so efficiency is not offered.
         _stage_opts = [k for k in STAGES if not (_continuous and k == "efficiency")]
         _stage_default = [k for k in _primary_stages
                           if not (_continuous and k == "efficiency")]
-        chosen = st.multiselect(
-            "Analyses to run", options=_stage_opts,
-            default=_stage_default, disabled=_busy,
-            format_func=lambda k: stage_labels[k],
-            help=("Vibration level, order and envelope run in parallel after "
-                  "segmentation." if _continuous else
-                  "The 4 analysis stages run in parallel after segmentation."))
+        chosen = []
+        _tile_cols = st.columns(3)
+        for _ti, _sk in enumerate(_stage_opts):
+            _icon, _desc = _STAGE_TILES.get(_sk, ("•", ""))
+            with _tile_cols[_ti % 3]:
+                with st.container(border=True):
+                    if st.checkbox(f"{_icon}  **{stage_labels[_sk]}**",
+                                   value=_sk in _stage_default,
+                                   key=f"stage_tile_{_sk}", disabled=_busy):
+                        chosen.append(_sk)
+                    st.caption(_desc)
         if _continuous:
             st.caption("Efficiency & torque are omitted in continuous mode "
                        "(they require torque / angle channels).")
@@ -1817,19 +1994,32 @@ with tab_run:
             st.session_state.setdefault(_k, _v)
         ac1, ac2 = st.columns(2)
         with ac1:
-            samples_per_rev = st.number_input("samples_per_rev", step=1,
-                                              key="adv_samples_per_rev",
-                                              disabled=_busy)
-            ball_pass_order = st.number_input("ball_pass_order", step=0.01,
-                                              format="%.2f",
-                                              key="adv_ball_pass_order",
-                                              disabled=_busy)
-            n_bpf_harmonics = st.number_input("n_bpf_harmonics", step=1,
-                                              key="adv_n_bpf_harmonics",
-                                              disabled=_busy)
-            bp_filter_order = st.number_input("bp_filter_order", step=1,
-                                              key="adv_bp_filter_order",
-                                              disabled=_busy)
+            samples_per_rev = st.number_input(
+                "samples_per_rev", step=1, key="adv_samples_per_rev",
+                disabled=_busy,
+                help="How finely each shaft revolution is resampled for order "
+                     "analysis. The highest readable order is half this value "
+                     "(128 → order 64). Raise only if you must see very high "
+                     "orders; it multiplies compute time.")
+            ball_pass_order = st.number_input(
+                "ball_pass_order", step=0.01, format="%.2f",
+                key="adv_ball_pass_order", disabled=_busy,
+                help="How many balls pass a fixed point per shaft revolution — "
+                     "the fingerprint of a recirculation defect. Comes from "
+                     "the ballscrew geometry (5.35 for this hardware); change "
+                     "it only when analysing a different screw.")
+            n_bpf_harmonics = st.number_input(
+                "n_bpf_harmonics", step=1, key="adv_n_bpf_harmonics",
+                disabled=_busy,
+                help="How many multiples of the ball-pass order to mark and "
+                     "integrate (4 → 5.35, 10.7, 16.05, 21.4). A real defect "
+                     "usually shows several harmonics; noise shows one.")
+            bp_filter_order = st.number_input(
+                "bp_filter_order", step=1, key="adv_bp_filter_order",
+                disabled=_busy,
+                help="Steepness of the band-pass filter used in the "
+                     "single-actuation extraction plot. 4 is a good default; "
+                     "higher = sharper edges but more ringing.")
             min_revolutions = st.number_input(
                 "min_revolutions", step=0.5, format="%.1f",
                 key="adv_min_revolutions", disabled=_busy,
@@ -1849,11 +2039,20 @@ with tab_run:
                 help="Absolute minimum search frequency (Hz). "
                      "Never searches below this value regardless of RPM. "
                      "Raise to ~1000 for high-RPM-only datasets.")
-            bp_min_bw_hz = st.number_input("bp_min_bw_hz", step=50.0,
-                                           key="adv_bp_min_bw_hz", disabled=_busy)
-            kurtogram_levels = st.number_input("kurtogram_levels", step=1,
-                                               key="adv_kurtogram_levels",
-                                               disabled=_busy)
+            bp_min_bw_hz = st.number_input(
+                "bp_min_bw_hz", step=50.0, key="adv_bp_min_bw_hz",
+                disabled=_busy,
+                help="Narrowest resonance band the search may pick (Hz). "
+                     "Too narrow drops the modulation sidebands the envelope "
+                     "needs and defect detection collapses — keep ≥ 200 Hz "
+                     "unless you know the resonance is very sharp.")
+            kurtogram_levels = st.number_input(
+                "kurtogram_levels", step=1, key="adv_kurtogram_levels",
+                disabled=_busy,
+                help="How finely the impact-band search divides the frequency "
+                     "axis (each level halves the band width). Higher = finer "
+                     "search but slower; the bandwidth floor above still "
+                     "limits the effective depth.")
             bp_max_hz = st.number_input(
                 "bp_max_hz", step=500.0, key="adv_bp_max_hz", disabled=_busy,
                 help="Upper bound (Hz) on the envelope resonance band — keep it "
@@ -2068,25 +2267,40 @@ with tab_review:
                 _state("empty",
                        "No saved runs match the active filters. Clear a chip "
                        "above to widen the search.")
-            for pr in _visible[:25]:
-                lc, mc, rc, rc2 = st.columns([5, 3, 1, 1])
-                lc.markdown(f"**{pr['name']}**  \n"
-                            f"<small>{pr['generated'] or 'unknown date'}</small>",
-                            unsafe_allow_html=True)
-                mc.markdown(f"{pr['stages_ok']}/{pr['stages_total']} analyses ok  \n"
-                            f"<small>{len(pr['parts'])} group(s) · "
-                            f"{len(pr['rpms'])} speed(s)</small>",
-                            unsafe_allow_html=True)
-                # Open is read-only (safe mid-run); Load settings overwrites the
-                # locked form, so it stays disabled while a run is in progress.
-                rc.button("Open", key=f"open_{pr['name']}",
-                          width='stretch',
-                          on_click=_open_run, args=(pr["manifest"],))
-                rc2.button("Load settings", key=f"load_{pr['name']}",
-                           width='stretch', disabled=_busy,
-                           on_click=_load_run_settings, args=(pr["manifest"],),
-                           help="Fill Define & Setup with this run's settings to "
-                                "re-run or tweak.")
+            # Tile grid — each saved run is a card: status, scope chips, actions.
+            _card_cols = st.columns(3)
+            for _ci, pr in enumerate(_visible[:24]):
+                _ok = pr["stages_ok"] == pr["stages_total"] and pr["stages_total"]
+                _status = ("✅ all analyses ok" if _ok else
+                           f"⚠ {pr['stages_ok']}/{pr['stages_total']} analyses ok")
+                _chips = "".join(
+                    f'<span class="ws-chip">{g}</span>'
+                    for g in list(pr["parts"])[:4])
+                if len(pr["parts"]) > 4:
+                    _chips += f'<span class="ws-chip">+{len(pr["parts"]) - 4}</span>'
+                if pr["rpms"]:
+                    _chips += (f'<span class="ws-chip">{len(pr["rpms"])} '
+                               "speed(s)</span>")
+                with _card_cols[_ci % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"**{pr['name']}**")
+                        st.caption(f"{pr['generated'] or 'unknown date'} · "
+                                   f"{_status}")
+                        if _chips:
+                            st.markdown(_chips, unsafe_allow_html=True)
+                        b1, b2 = st.columns(2)
+                        # Open is read-only (safe mid-run); Load settings
+                        # overwrites the locked form, so it stays disabled
+                        # while a run is in progress.
+                        b1.button("Open", key=f"open_{pr['name']}",
+                                  width='stretch', type="primary",
+                                  on_click=_open_run, args=(pr["manifest"],))
+                        b2.button("Load settings", key=f"load_{pr['name']}",
+                                  width='stretch', disabled=_busy,
+                                  on_click=_load_run_settings,
+                                  args=(pr["manifest"],),
+                                  help="Fill Define & Setup with this run's "
+                                       "settings to re-run or tweak.")
             st.caption("Opened runs appear in the Open runs tab. "
                        "Load settings pre-fills Define & Setup.")
 

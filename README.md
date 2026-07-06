@@ -221,11 +221,25 @@ constant-speed **plateau** of each stroke and constrain envelope band selection:
 EP_*.py                     analysis stages (the proven numerics)
 nvh_pipeline/
   config.py                 PipelineConfig + nvh_config.json load/save + injection
-  common.py                 shared helpers (material_type, RMS)
-  runner.py                 runs stages, writes manifest.json
+  common.py                 shared helpers (RMS, plateau gating, resampling,
+                            dataset discovery, header QA)
+  dataset.py                DuckDB-over-parquet layer (column pushdown, one
+                            GROUP BY per reduction, data-quality audit)
+  campbell.py               Campbell-diagram building blocks
+  runner.py                 runs stage groups (parallel after segment),
+                            writes manifest.json, emits progress events
+  app_helpers.py            pure helpers for the Streamlit app
+  viz.py                    interactive Altair result views (Review tab)
   __main__.py               CLI  (python -m nvh_pipeline)
   famos_entry.py            the function FAMOS calls
-famos/                      FAMOS setup guide + panel/sequence templates
+famos/                      FAMOS setup guide
+tests/                      pytest suite incl. analytically-grounded
+                            validation cases and a golden end-to-end run
+                            (pytest tests/ -v; pytest -m report for the
+                            signable validation PDF)
+packaging/                  Windows no-install bundle builder + launcher
+streamlit_app.py            point-and-click front end (guided stepper,
+                            analysis tiles, run library, project switcher)
 nvh_config.example.json     starter config
 make_testdata.py            synthetic data generator for smoke testing
 ```
