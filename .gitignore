@@ -7,6 +7,8 @@ __pycache__/
 # Local pipeline config (machine-specific paths) and generated outputs
 nvh_config.json
 nvh_config.test.json
+.nvh_settings.json
+output_validation/
 results/
 output_seg/
 output_loudness/

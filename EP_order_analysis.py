@@ -650,7 +650,9 @@ def bpfo_band_energy(common_orders: np.ndarray, spectrum: np.ndarray,
             # Single-point band: rectangle rule with full band width
             energy = float(spectrum[mask][0]) * 2.0 * halfwidth
         else:
-            _trapz = getattr(np, 'trapezoid', np.trapz)
+            # np.trapezoid (NumPy >= 2.0) replaced np.trapz; the fallback must
+            # not be evaluated eagerly or NumPy 2.x raises AttributeError.
+            _trapz = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
             energy = float(_trapz(spectrum[mask], common_orders[mask]))
         result[f'h{h}'] = round(energy, 8)
         total += energy

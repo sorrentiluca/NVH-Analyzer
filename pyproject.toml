@@ -23,4 +23,5 @@ py-modules = [
     "EP_segment", "EP_loudness", "EP_loudness_plot", "EP_loudness_by_sample",
     "EP_torque", "EP_efficiency", "EP_order_analysis", "EP_Envelope",
     "EP_bandpass", "EP_Sample_summary", "EP_actuation_plot",
+    "EP_characteristics",
 ]

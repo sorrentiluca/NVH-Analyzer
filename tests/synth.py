@@ -311,7 +311,8 @@ def encoder_glitch(order: float = 5.0, amp: float = 1.0, rpm: float = 1200.0,
     clamped via maximum.accumulate."""
     df, expected = pure_order_tone(order, amp, rpm=rpm, n_rev=n_rev)
     df = df.copy()
-    ang = df[ANGLE_COL].to_numpy()
+    # .copy(): with pandas copy-on-write, to_numpy() can be a read-only view.
+    ang = df[ANGLE_COL].to_numpy().copy()
     rng = np.random.default_rng(3)
     n_back = int(frac_backward * len(ang))
     idx = rng.choice(np.arange(1, len(ang)), size=n_back, replace=False)
