@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Local pipeline config (machine-specific paths) and generated outputs
+nvh_config.json
+nvh_config.test.json
+results/
+output_seg/
+output_loudness/
+output_loudness_samples/
+output_order/
+output_envelope/
+output_torque/
+output_efficiency/
+output_handover/
+output_actuation_plot/
+manifest.json
+
+# Synthetic smoke-test data (regenerate with make_testdata.py)
+testdata/
+results_smoke/
+
+# Standalone Windows app build output (regenerate with packaging/build_windows_app.ps1)
+dist/

@@ -1,0 +1,49 @@
+{
+  "data_dir": "C:\\Users\\sorrelca\\OneDrive - Schaeffler\\Accelerated Leadership Program\\Rotation 4 (Troy)\\Ballscrew Testing\\FAMOS-scripts\\Native-Famos-Order-Tracking\\Famos-nvh-claude-brave-pasteur-9ssx4o\\Famos-nvh-claude-brave-pasteur-9ssx4o\\testdata",
+  "output_root": "C:/tmp/nvh_test",
+  "parts": [
+    "m627",
+    "T8"
+  ],
+  "rpms": [
+    100,
+    2300
+  ],
+  "time_col": "Time (s)",
+  "rpm_col": "CNT 1/Frequency (RPM)",
+  "angle_col": "CNT 1/Angle (Degrees)",
+  "torque_col": "Torque (Nm)",
+  "accel_cols": {
+    "X": "X Accel (m/s2)",
+    "Y": "Z Accel (m/s2)",
+    "Z": "Y Accel (m/s2)"
+  },
+  "material_colors": {
+    "metal": "#1f77b4",
+    "plastic": "#ff7f0e"
+  },
+  "remove_dc": true,
+  "samples_per_rev": 128,
+  "ball_pass_order": 5.35,
+  "n_bpf_harmonics": 4,
+  "bp_min_hz": 1000.0,
+  "bp_min_hz_abs": 50.0,
+  "bp_min_bw_hz": 200.0,
+  "kurtogram_levels": 4,
+  "bp_filter_order": 4,
+  "min_kurtosis": 3.0,
+  "normalize_segments": true,
+  "min_revolutions": 2.0,
+  "bpfo_band_halfwidth": 0.25,
+  "only_parts": null,
+  "only_rpms": null,
+  "show_plots": false,
+  "render_plots": false,
+  "stages": [
+    "segment",
+    "vibration",
+    "efficiency",
+    "order",
+    "envelope"
+  ]
+}

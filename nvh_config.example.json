@@ -1,0 +1,50 @@
+{
+  "data_dir": "C:/Users/sorrelca/OneDrive - Schaeffler/Accelerated Leadership Program/Rotation 4 (Troy)/Ballscrew Testing/Test Data/Variable-tests/Plastic",
+  "output_root": "./results",
+
+  "parts": ["m627", "m625", "m635", "T8", "T11", "T13"],
+  "rpms": [100, 200, 400, 800, 1600, 2300],
+
+  "time_col": "Time (s)",
+  "rpm_col": "CNT 1/Frequency (RPM)",
+  "angle_col": "CNT 1/Angle (Degrees)",
+  "torque_col": "Torque (Nm)",
+
+  "accel_cols": {
+    "X": "X Accel (m/s2)",
+    "Y": "Z Accel (m/s2)",
+    "Z": "Y Accel (m/s2)"
+  },
+  "material_colors": {
+    "metal": "#1f77b4",
+    "plastic": "#ff7f0e"
+  },
+
+  "samples_per_rev": 128,
+  "ball_pass_order": 5.35,
+  "n_bpf_harmonics": 4,
+
+  "bp_min_hz": 1000.0,
+  "bp_min_bw_hz": 200.0,
+  "kurtogram_levels": 6,
+  "bp_filter_order": 4,
+
+  "only_parts": null,
+  "only_rpms": null,
+
+  "show_plots": false,
+
+  "stages": [
+    "segment",
+    "loudness",
+    "loudness_plot",
+    "loudness_by_sample",
+    "torque",
+    "efficiency",
+    "order",
+    "envelope",
+    "bandpass",
+    "sample_summary",
+    "actuation_plot"
+  ]
+}

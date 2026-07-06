@@ -1,0 +1,19 @@
+# Everything the bundled Streamlit app needs = pipeline core + Streamlit UI.
+# The Windows build script installs exactly this list into the embedded runtime.
+#
+# Versions are PINNED for a reproducible bundle. The Windows build runs
+#   pip install --only-binary=:all: -r requirements-app.txt
+# into a compiler-less embeddable runtime, so EVERY pin below MUST keep a
+# cp311 win_amd64 wheel available on PyPI (the default build targets Python
+# 3.11.9). If you bump a pin, confirm a matching win_amd64 wheel exists first —
+# otherwise the Windows build fails fast at pip install. (streamlit ships a
+# pure-python py3-none-any wheel; the rest are compiled and version-sensitive.)
+pandas==2.3.0
+numpy==2.2.6
+scipy==1.15.3
+matplotlib==3.10.3
+pyarrow==24.0.0
+streamlit==1.58.0
+# DuckDB: single self-contained wheel (no server, no admin). cp311-win_amd64 wheel
+# ships on every DuckDB release — confirm at pypi.org/project/duckdb/#files before bumping.
+duckdb==1.5.3
