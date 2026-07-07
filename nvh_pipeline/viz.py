@@ -521,6 +521,11 @@ def _view_envelope(out_root: str) -> StageView:
         v.chart_variants.append(("Split the spectrum", variants))
 
     bands = _read_csv(out_root, "output_envelope", "part_bands.csv")
+    if bands is None:
+        v.notes.append(
+            "Per-specimen band chart not shown: no part_bands.csv was "
+            "produced. This happens when band scope is 'per_segment' or when "
+            "no specimen had enough plateau data to fix a band.")
     if bands is not None and {"part", "f_low_hz", "f_high_hz"} <= set(bands.columns):
         bc = alt.Chart(bands).mark_bar(height=14, cornerRadius=3).encode(
             x=alt.X("f_low_hz:Q", title="frequency (Hz)"),
@@ -538,6 +543,12 @@ def _view_envelope(out_root: str) -> StageView:
              "specimen's impacts ring", bc))
 
     grid = _read_csv(out_root, "output_envelope", "kurtogram_grid.csv")
+    if grid is None:
+        v.notes.append(
+            "Kurtogram heatmap not shown: no kurtogram_grid.csv was "
+            "produced. At low sample rates the bandwidth floor "
+            "(bp_min_bw_hz) can leave no candidate bands to grid — the "
+            "single detected band above is still valid.")
     if grid is not None and {"f_center_hz", "level", "kurtosis"} <= set(grid.columns):
         heat = alt.Chart(grid).mark_rect().encode(
             x=alt.X("f_center_hz:Q", bin=alt.Bin(maxbins=60),

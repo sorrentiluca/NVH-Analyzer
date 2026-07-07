@@ -3,7 +3,7 @@
  streamlit_app  —  point-and-click front end for the Ballscrew NVH pipeline
 ═══════════════════════════════════════════════════════════════════════════════
 
-This is the same pipeline the CLI and FAMOS drive (nvh_pipeline.runner.run_all);
+This is the same pipeline the CLI drives (nvh_pipeline.runner.run_all);
 the only thing this file adds is a browser UI in front of it:
 
     • a form that edits the PipelineConfig fields,
@@ -17,7 +17,7 @@ it also runs in plain dev:
     pip install -r requirements.txt streamlit
     streamlit run streamlit_app.py
 
-Nothing here is FAMOS- or OS-specific; it only calls the public pipeline API.
+Nothing here is OS-specific; it only calls the public pipeline API.
 """
 
 from __future__ import annotations
@@ -66,6 +66,14 @@ def _remember_root(path: str) -> None:
     recent.insert(0, path)
     s["recent_roots"] = recent[:8]
     s["results_root"] = path
+    _save_settings(s)
+
+
+def _remember_data_dir(path: str) -> None:
+    """Persist the active data folder so reopening the app lands exactly
+    where the user left off."""
+    s = _load_settings()
+    s["data_dir"] = path
     _save_settings(s)
 
 
@@ -133,9 +141,9 @@ def _inject_css() -> None:
           /* ── Airiness — let the content breathe ──────────────────────────── */
           section.main .block-container {{
               padding-top: 3rem;
-              padding-left: 3.5rem;
-              padding-right: 3.5rem;
-              max-width: 1400px;
+              padding-left: 2.5rem;
+              padding-right: 2.5rem;
+              max-width: 1750px;   /* three side-by-side dashboard panels */
           }}
 
           /* ── Soft dividers (no heavy contrast lines) ─────────────────────── */
@@ -470,23 +478,23 @@ def _as_int_list(val):
 
 
 @st.cache_data(show_spinner=False)
-def _discover(data_dir: str, _mtime: float) -> dict:
-    """Cached dataset scan. ``_mtime`` busts the cache when the folder changes so
-    per-keystroke reruns don't rescan a large raw-data share."""
+def _discover(data_dir: str, mtime: float) -> dict:
+    """Cached dataset scan. ``mtime`` is part of the cache key, so the scan
+    re-runs when the folder changes but not on every keystroke."""
     return discover_dataset(data_dir)
 
 
 @st.cache_data(show_spinner=False)
-def _inspect(data_dir: str, _mtime: float) -> dict:
+def _inspect(data_dir: str, mtime: float) -> dict:
     """Cached header-consistency scan (reads only each CSV's header row).
-    ``_mtime`` busts the cache when the folder changes."""
+    ``mtime`` keys the cache to the folder's current state."""
     return inspect_headers(data_dir)
 
 
 @st.cache_data(show_spinner=False)
-def _single_file_columns(path: str, _mtime: float) -> list:
+def _single_file_columns(path: str, mtime: float) -> list:
     """Cached header read for a single CSV (continuous mode).  Returns the column
-    names, or [] if the file can't be read.  ``_mtime`` busts the cache on edit."""
+    names, or [] if the file can't be read.  ``mtime`` keys the cache."""
     try:
         import pandas as _pd
         return list(_pd.read_csv(path, nrows=0).columns)
@@ -521,9 +529,9 @@ def _runs_fingerprint(root: str) -> tuple:
 
 
 @st.cache_data(show_spinner=False)
-def _scan_runs_cached(root: str, _fp: tuple) -> list:
-    """Cached run-library scan; ``_fp`` (the fingerprint) busts the cache the
-    moment a run is added, re-run or deleted."""
+def _scan_runs_cached(root: str, fingerprint: tuple) -> list:
+    """Cached run-library scan, keyed on the fingerprint — re-scans the
+    moment a run is added, re-run or deleted, never on plain reruns."""
     return _scan_past_runs(root)
 
 
@@ -750,27 +758,12 @@ def _auto_name_run(parts_key: str = "_detected_parts",
     st.session_state["run_name_input"] = _generate_run_name(parts, rpms)
 
 
-def _open_run(manifest_path: str) -> None:
-    """on_click: add a run to the Review tab set (most-recent first), no reprocessing."""
-    runs = st.session_state.setdefault("opened_runs", [])
-    if manifest_path in runs:
-        runs.remove(manifest_path)
-    runs.insert(0, manifest_path)
-
-
-def _close_run(manifest_path: str) -> None:
-    """on_click: remove a run from the Review tab set."""
-    runs = st.session_state.get("opened_runs", [])
-    if manifest_path in runs:
-        runs.remove(manifest_path)
-
-
 def _load_run_settings(manifest_path: str) -> None:
-    """on_click: load a past run's nvh_config.json back into the Define form.
+    """on_click: load a past run's nvh_config.json back into the workspace.
 
-    Reads the resolved config saved next to the run and writes the form's
-    widget-bound session keys, so a previous run can be reviewed, tweaked and
-    re-run without retyping anything (replaces the old "Reproduce this run").
+    Reads the resolved config saved next to the run and restores the setup
+    dict + form fields, so a previous run can be reviewed, tweaked and re-run
+    without retyping anything.
     """
     out_root = os.path.dirname(manifest_path)
     cfg_file = os.path.join(out_root, "nvh_config.json")
@@ -784,10 +777,7 @@ def _load_run_settings(manifest_path: str) -> None:
         return
 
     ss = st.session_state
-    # Analysis mode + continuous-only fields.
-    ss["analysis_mode_ui"] = getattr(cfg, "analysis_mode", "reciprocating")
     ss["single_file_input"] = getattr(cfg, "single_file", None) or ""
-    ss["cont_signal_label"] = getattr(cfg, "signal_label", "signal") or "signal"
     ss["data_dir_input"] = cfg.data_dir or ""
     # output_root = <results_root>/<run_name>: split it back into the two fields.
     _out = (cfg.output_root or "").rstrip("\\/")
@@ -795,20 +785,26 @@ def _load_run_settings(manifest_path: str) -> None:
     ss["run_name_input"] = os.path.basename(_out) or ""
     ss["_edit_results_root"] = False
 
-    # Column mapping (only set an axis column when that axis was included).
-    ss["map_time"] = cfg.time_col
-    ss["map_rpm"] = cfg.rpm_col
-    ss["map_angle"] = cfg.angle_col
-    ss["map_torque"] = cfg.torque_col
-    for ax in ("X", "Y", "Z"):
-        col = (cfg.accel_cols or {}).get(ax, "")
-        ss[f"accel_on_{ax}"] = bool(col)
-        if col:
-            ss[f"accel_col_{ax}"] = col
-
-    # Groups / speeds — only_parts/only_rpms is the filter the user actually chose.
-    ss["setup_parts"] = [str(p) for p in (cfg.only_parts or cfg.parts or ())]
-    ss["setup_rpms"] = [int(r) for r in (cfg.only_rpms or cfg.rpms or ())]
+    # The whole setup travels in one persistent dict (see the Setup view).
+    ss["_cfg"] = {
+        "analysis_mode": getattr(cfg, "analysis_mode", "reciprocating"),
+        "signal_label": getattr(cfg, "signal_label", "signal") or "signal",
+        "time_col": cfg.time_col,
+        "rpm_col": cfg.rpm_col,
+        "angle_col": cfg.angle_col,
+        "torque_col": cfg.torque_col,
+        "accel_cols": {ax: c for ax, c in (cfg.accel_cols or {}).items()
+                       if c},
+        # only_parts/only_rpms is the filter the user actually chose.
+        "parts": [str(p) for p in (cfg.only_parts or cfg.parts or ())],
+        "rpms": [int(r) for r in (cfg.only_rpms or cfg.rpms or ())],
+    }
+    # Drop the Setup view's widget echoes so they re-seed from the new _cfg.
+    for _k in ("analysis_mode_ui", "cont_signal_label", "map_time", "map_rpm",
+               "map_angle", "map_torque", "setup_parts", "setup_rpms",
+               "accel_on_X", "accel_on_Y", "accel_on_Z",
+               "accel_col_X", "accel_col_Y", "accel_col_Z"):
+        ss.pop(_k, None)
 
     # Advanced parameters.
     ss["adv_samples_per_rev"] = cfg.samples_per_rev
@@ -826,11 +822,12 @@ def _load_run_settings(manifest_path: str) -> None:
     ss["adv_campbell_window_rev"] = getattr(cfg, "campbell_window_rev", 1.5)
     ss["adv_campbell_rpm_bin"] = getattr(cfg, "campbell_rpm_bin", 50.0)
 
-    # Suppress the folder-change reset (it clears map_*/accel_*/setup_* when the
-    # data folder changes) so the mapping we just loaded survives the next rerun.
+    # Suppress the folder-change reset (it clears the setup dict when the
+    # data folder changes) so the mapping we just loaded survives the rerun.
     ss["_last_data_dir"] = cfg.data_dir or ""
+    ss["view"] = "home"
     st.toast(f"Loaded settings from '{os.path.basename(_out)}' — "
-             "review in Define & Setup.")
+             "review them in Setup.")
 
 
 _COL_NONE = "— none —"
@@ -1068,10 +1065,11 @@ def _render_view(view, key_prefix: str, *, error: str = None):
 
 
 @st.cache_data(show_spinner="Loading results…")
-def _build_views(manifest_path: str, _mtime: float):
+def _build_views(manifest_path: str, mtime: float):
     """Cache viz.build_views() keyed on manifest path + mtime.
 
-    ``_mtime`` busts the cache after a re-run rewrites the manifest.  Altair
+    ``mtime`` keys the cache, so a re-run that rewrites the manifest is
+    picked up immediately.  Altair
     chart objects and file-path strings are fully picklable so Streamlit's
     pickle-based cache works without issue.
     """
@@ -1318,9 +1316,10 @@ def _render_progress_body(job: dict) -> None:
         st.session_state["running"] = False
         manifest = prog.get("manifest") or job.get("manifest")
         if manifest and os.path.isfile(manifest):
-            _open_run(manifest)
+            st.session_state["report_manifest"] = manifest
+            st.session_state["_run_completed"] = True
             st.session_state["last_run_msg"] = (
-                "success", "Run complete. Open the Review tab to explore results.")
+                "success", "Run complete — the report is ready.")
         else:
             err = prog.get("error", "see the run log above")
             st.session_state["last_run_msg"] = (
@@ -1337,26 +1336,101 @@ else:  # very old Streamlit — degrade to a single render per rerun
 # ─────────────────────────────────────────────────────────────────────────────
 #  Page  —  title, workspace settings, and the three-step workflow
 # ─────────────────────────────────────────────────────────────────────────────
-_inject_css()  # sticky main tabs + Schaeffler-green accent
+_inject_css()  # calm card visual language + accent
 
 d = PipelineConfig()  # defaults used to prefill the form
 
-# One-time session-state initialisation. results_root is restored from settings.
+# One-time session-state initialisation. The workspace (results root + data
+# folder) is restored from settings, so reopening the app lands where the
+# user left off.
 _settings = _load_settings()
-st.session_state.setdefault("data_dir_input", "")
+st.session_state.setdefault("data_dir_input", _settings.get("data_dir", ""))
 st.session_state.setdefault("results_root_input",
                             _settings.get("results_root", "results"))
 st.session_state.setdefault("run_name_input", _generate_run_name([], []))
-st.session_state.setdefault("opened_runs", [])
 
 # True while a pipeline subprocess is running — used to grey out every action
 # button so nothing can be changed or re-submitted mid-run.
 _busy = bool(st.session_state.get("running"))
 
-# ── Sidebar — workspace settings only; the workflow itself lives in the tabs ───
+# ── Navigation state — one overview page, deep dives behind it ────────────────
+# The whole app is a single dashboard ("home") with two deep-dive views the
+# panels open: "setup" (column mapping, groups & speeds) and "report" (the
+# full results of one run).  Buttons switch views; nothing is more than one
+# click from the overview.
+_view = st.session_state.setdefault("view", "home")
+
+
+def _go(view: str) -> None:
+    st.session_state["view"] = view
+
+
+def _open_report(manifest_path: str) -> None:
+    st.session_state["report_manifest"] = manifest_path
+    st.session_state["view"] = "report"
+    # Set in the callback (pre-script) so the stepper's "Review results"
+    # checkmark turns green on the very same rerun.
+    st.session_state["_report_viewed"] = True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Demo workspace  —  one-click starter campaign with known answers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _launch_demo_workspace() -> None:
+    """Generate the synthetic teaching campaign, point the workspace at it,
+    and start a full analysis — one click from empty app to live results."""
+    from nvh_pipeline.demo import create_demo_workspace
+
+    ws = create_demo_workspace(os.path.join(_HERE, "demo_workspace"))
+    st.session_state["data_dir_input"] = ws["data_dir"]
+    st.session_state["results_root_input"] = ws["results_dir"]
+    st.session_state["_last_data_dir"] = ws["data_dir"]
+    st.session_state.pop("_cfg", None)
+    st.session_state["run_name_input"] = "demo_walkthrough"
+    st.session_state["_demo_guide"] = ws["guide"]
+    _remember_root(ws["results_dir"])
+    _remember_data_dir(ws["data_dir"])
+
+    scan = discover_dataset(ws["data_dir"])
+    form = dict(
+        analysis_mode="reciprocating", single_file=None, nominal_rpm=None,
+        signal_label="signal", data_dir=ws["data_dir"],
+        output_root=os.path.join(ws["results_dir"], "demo_walkthrough"),
+        parts=scan["parts"], rpms=scan["rpms"],
+        time_col=d.time_col, rpm_col=d.rpm_col, angle_col=d.angle_col,
+        torque_col=d.torque_col,
+        accel_cols=dict(d.accel_cols),
+        samples_per_rev=d.samples_per_rev, ball_pass_order=d.ball_pass_order,
+        n_bpf_harmonics=d.n_bpf_harmonics, bp_min_hz=d.bp_min_hz,
+        bp_min_hz_abs=d.bp_min_hz_abs, bp_min_bw_hz=d.bp_min_bw_hz,
+        kurtogram_levels=d.kurtogram_levels, bp_filter_order=d.bp_filter_order,
+        min_revolutions=d.min_revolutions,
+        only_parts="", only_rpms="", render_plots=True,
+    )
+    cfg = _config_from_form(form)
+    set_active(cfg)
+    os.makedirs(cfg.output_root, exist_ok=True)
+    cfg_path = os.path.join(cfg.output_root, "nvh_config.json")
+    cfg.to_json(cfg_path)
+    os.environ["NVH_CONFIG"] = os.path.abspath(cfg_path)
+    st.session_state["run_job"] = _spawn_run(
+        os.path.abspath(cfg_path), list(STAGES), cfg.output_root)
+    st.session_state["running"] = True
+    st.session_state["view"] = "home"
+
+
+
+# ── Sidebar — workspace settings; the workflow itself lives on the dashboard ──
 with st.sidebar:
     st.markdown("### NVH Analyzer")
-    st.caption("Vibration analysis for DEWESOFT / FAMOS CSV exports.")
+    st.caption("Vibration analysis for time-series CSV exports.")
+
+    nav_map = [("home", "Overview"), ("setup", "Setup"), ("report", "Report")]
+    for _vk, _vl in nav_map:
+        st.button(("● " if _view == _vk else "") + _vl,
+                  key=f"nav_{_vk}", width='stretch',
+                  on_click=_go, args=(_vk,))
     st.divider()
     st.subheader("Workspace")
 
@@ -1369,7 +1443,7 @@ with st.sidebar:
 
     if st.session_state["_edit_results_root"] or not _rr:
         st.text_input(
-            "Results root",
+            "Results folder",
             key="results_root_input", disabled=_busy,
             placeholder=r"e.g.  D:\NVH_Results",
             help="Parent folder. Every run is saved in its own sub-folder here.")
@@ -1383,7 +1457,7 @@ with st.sidebar:
                       help="Save and use this results folder."):
             _remember_root(st.session_state.get("results_root_input", ""))
             st.session_state["_edit_results_root"] = False
-            st.toast("Results root saved.")
+            st.toast("Results folder saved.")
             st.rerun()
     else:
         _leaf = os.path.basename(_rr.rstrip("\\/")) or _rr
@@ -1406,7 +1480,7 @@ with st.sidebar:
                 sel = st.session_state.get("project_switcher")
                 if sel and sel != st.session_state.get("results_root_input"):
                     st.session_state["results_root_input"] = sel
-                    st.session_state["opened_runs"] = []
+                    st.session_state.pop("report_manifest", None)
                     _remember_root(sel)
 
             st.selectbox(
@@ -1414,13 +1488,13 @@ with st.sidebar:
                 disabled=_busy, on_change=_switch_project,
                 format_func=lambda p: os.path.basename(p.rstrip("\\/")) or p,
                 help="Jump to another results folder you've used before. "
-                     "Each project keeps its own run library.")
+                     "Each project keeps its own run history.")
 
     results_root = st.session_state.get("results_root_input", "")
 
-    # Global run status — the single live poller lives here so progress + abort
-    # are visible from every tab while the rest of the app stays usable.
-    if _busy:
+    # On deep-dive views the live poller moves here so progress + abort stay
+    # visible; on the overview it renders in the Status panel instead.
+    if _busy and _view != "home":
         st.divider()
         st.subheader("Run in progress")
         _job = st.session_state.get("run_job") or {}
@@ -1428,17 +1502,20 @@ with st.sidebar:
         _render_progress(_job)
 
     st.divider()
-    st.caption("Reads DEWESOFT-style CSV exports, segments each actuation, and "
-               "reports vibration level, order content, bearing envelope, torque "
-               "and efficiency.")
+    st.caption("Reads time-series CSV exports, splits each actuation, and "
+               "reports vibration level, order content, bearing envelope, "
+               "torque and efficiency.")
+    st.button("🎓 Demo workspace", key="sidebar_demo", disabled=_busy,
+              on_click=_launch_demo_workspace,
+              help="Rebuild the synthetic teaching campaign (known answers, "
+                   "guided walkthrough) and run a full analysis on it.")
 
-# ── Pre-compute state needed by all tabs (runs before any tab renders) ─────────
-# Analysis mode: 'reciprocating' (ballscrew rig, a folder of files) or
-# 'continuous' (one steady rotating-machine signal).  The radio that sets this
-# renders inside the Define tab, but its value is read here (from session state)
-# because the pre-compute block runs first on every rerun.
-st.session_state.setdefault("analysis_mode_ui", "reciprocating")
-_continuous = st.session_state.get("analysis_mode_ui") == "continuous"
+# ── Shared pre-compute (runs before any view renders) ─────────────────────────
+# All user setup lives in one persistent dict, st.session_state["_cfg"], so it
+# survives moving between the overview and the deep-dive views (Streamlit
+# forgets widget state for widgets that are not on the current view).
+_cfg_saved: dict = st.session_state.get("_cfg") or {}
+_continuous = _cfg_saved.get("analysis_mode", "reciprocating") == "continuous"
 
 data_dir = st.session_state.get("data_dir_input", "").strip()
 _dd = data_dir
@@ -1456,45 +1533,75 @@ if _continuous and _single_valid:
 else:
     _cols_avail = headers["all_columns"] if headers else []
 
-# Clear column-role session keys when the data folder changes so hint-matching
-# runs fresh against the new folder's column names.
-_COL_ROLE_KEYS = (
-    "map_time", "map_rpm", "map_angle", "map_torque",
-    "accel_col_X", "accel_col_Y", "accel_col_Z",
-    "accel_on_X", "accel_on_Y", "accel_on_Z",
-    # Groups/speeds selections also re-seed to "all detected" on a folder change.
-    "setup_parts", "setup_rpms",
-)
+# A change of data folder invalidates the saved setup (column roles, groups):
+# hint-matching must run fresh against the new folder's column names.
 if _dd != st.session_state.get("_last_data_dir", ""):
-    for _k in _COL_ROLE_KEYS:
-        st.session_state.pop(_k, None)
+    st.session_state.pop("_cfg", None)
+    _cfg_saved = {}
     st.session_state["_last_data_dir"] = _dd
 
-# Safe defaults — overwritten by widget values on every rerun once the user
-# visits the Define & Setup tab (all tab code executes on each rerun).
-accel_cols_map: dict = {}
-time_col: str = d.time_col
-rpm_col: str = d.rpm_col
-angle_col: str = d.angle_col
-torque_col: str = d.torque_col
-parts = list(d.parts)
-rpms = list(d.rpms)
-run_name: str = ""
-# Continuous-mode form values (overwritten by widgets when that mode is active).
-signal_label_val: str = d.signal_label
-nominal_rpm_val = None
+_ACCEL_HINTS = {
+    "X": ("x accel", "accel x", "acc_x", "ax ", "ch1", " x", "X Accel", "accel",
+          "vib"),
+    "Y": ("y accel", "accel y", "acc_y", "ay ", "ch2", " y", "Y Accel", "accel"),
+    "Z": ("z accel", "accel z", "acc_z", "az ", "ch3", " z", "Z Accel", "accel"),
+}
+
+
+def _auto_signal_map(cols: list) -> dict:
+    """Best-guess column roles from the detected headers — the zero-config
+    path.  The Setup view refines these; until then the guesses are used."""
+    m = {
+        "time_col": _default_for(d.time_col, cols,
+                                 "time", "t ", "ts", "timestamp"),
+        "rpm_col": _default_for(d.rpm_col, cols,
+                                "rpm", "frequency", "freq", "speed",
+                                "rot", "rev"),
+        "angle_col": _default_for(d.angle_col, cols,
+                                  "angle", "deg", "encoder", "enc", "pos"),
+        "torque_col": _default_for(d.torque_col, cols,
+                                   "torque", "nm", "moment", "trq"),
+    }
+    if cols:
+        m["accel_cols"] = {ax: _default_for(d.accel_cols.get(ax, ""), cols,
+                                            *_ACCEL_HINTS[ax])
+                           for ax in ("X", "Y", "Z")}
+        # In continuous single-channel data the same column can win several
+        # axes — keep each detected column once.
+        seen: set = set()
+        m["accel_cols"] = {ax: c for ax, c in m["accel_cols"].items()
+                           if c and not (c in seen or seen.add(c))}
+    else:
+        m["accel_cols"] = dict(d.accel_cols)
+    return m
+
+
+# Effective setup = auto-detected defaults overlaid with whatever the Setup
+# view saved.  Every consumer (blockers, run builder, stepper) reads this.
+_setup = _auto_signal_map(_cols_avail)
+for _k in ("time_col", "rpm_col", "angle_col", "torque_col", "accel_cols",
+           "signal_label"):
+    if _cfg_saved.get(_k) is not None:
+        _setup[_k] = _cfg_saved[_k]
+_setup.setdefault("signal_label", d.signal_label)
+
+_detected_parts = list(detected["parts"]) if detected else []
+_detected_rpms = list(detected["rpms"]) if detected else []
+parts = list(_cfg_saved.get("parts") or _detected_parts)
+rpms = list(_cfg_saved.get("rpms") or _detected_rpms)
+
+run_name = st.session_state.get("run_name_input", "").strip()
 
 # ── Workflow stepper — the linear guide across the whole journey ──────────────
-# States are derived from real readiness (not which tab is open), so the nodes
+# States are derived from real readiness (not which view is open), so the nodes
 # turn into green checkmarks exactly when a step is genuinely complete.
 _step1_done = bool(
     (_continuous and _single_valid and _cols_avail)
     or (not _continuous and detected and detected.get("matched", 0) > 0))
 _step2_done = bool(_step1_done and _cols_avail)
-_has_open_runs = any(os.path.isfile(m)
-                     for m in st.session_state.get("opened_runs", []))
-_step3_done = bool(_has_open_runs and not _busy)
-_step4_done = bool(_has_open_runs and not _busy)
+_step3_done = bool((st.session_state.get("_run_completed")
+                    or st.session_state.get("_report_viewed")) and not _busy)
+_step4_done = bool(st.session_state.get("_report_viewed") and not _busy)
 
 _states = []
 for _done in (_step1_done, _step2_done, _step3_done, _step4_done):
@@ -1515,344 +1622,202 @@ _render_stepper([
     ("Review results", _states[3]),
 ])
 
-# ── Primary navigation — immediately below the title ──────────────────────────
-tab_define, tab_run, tab_review = st.tabs(
-    ["Define & Setup", "Run", "Review"])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Cached probes for the Data Source summary + run comparison
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(show_spinner=False)
+def _probe_fs(path: str, mtime: float):
+    """Sampling rate estimated from the first ~400 rows of one CSV."""
+    try:
+        import pandas as _pd
+        import numpy as _np
+        df = _pd.read_csv(path, nrows=400)
+        tc = next((c for c in df.columns if "time" in str(c).lower()),
+                  df.columns[0])
+        t = _pd.to_numeric(df[tc], errors="coerce").dropna().to_numpy()
+        if len(t) < 3:
+            return None
+        dt = float(_np.median(_np.diff(t)))
+        return (1.0 / dt) if dt > 0 else None
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _run_quick_metrics(manifest_path: str, mtime: float) -> dict:
+    """Key numbers for one finished run — feeds the Compare-runs table."""
+    row: dict = {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except Exception:
+        return row
+    recs = manifest.get("stages", [])
+    row["Analyses ok"] = (f"{sum(1 for r in recs if r['status'] == 'ok')}"
+                          f"/{len(recs)}")
+    out_root = manifest.get("output_root") or os.path.dirname(manifest_path)
+    try:
+        import pandas as _pd
+        rms = _pd.read_csv(os.path.join(out_root, "output_loudness",
+                                        "rms_per_segment.csv"))
+        row["Actuations"] = len(rms)
+        by = rms.groupby("material")["rms_combined"].mean()
+        for mat, val in by.items():
+            row[f"RMS {mat} (m/s²)"] = round(float(val), 4)
+        if {"metal", "plastic"} <= set(by.index) and by["metal"] > 0:
+            row["Plastic / metal"] = f"{by['plastic'] / by['metal']:.2f}×"
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(out_root, "output_order",
+                               "run_metadata.json"), encoding="utf-8") as fh:
+            om = json.load(fh)
+        row["Mean revolutions"] = om.get("mean_revolutions")
+    except Exception:
+        pass
+    return row
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 1 — Define & Setup  (sub-ribbon: Data · Columns · Signals · Run setup)
+#  VIEW: SETUP  —  deep dive behind the Data Source panel
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_define:
-    _screen_header("Define & Setup",
-                   "Point at your raw CSVs, confirm the column mapping, and name "
-                   "the run.")
-    _breadcrumb("Define & Setup")
 
-    # ── Analysis mode ──────────────────────────────────────────────────────────
-    # Ballscrew rig = a folder of <part>-<rpm>rpm-<trial>.csv, split into strokes.
-    # Continuous = one steady rotating-machine signal, analysed whole (no naming).
+def _page_setup() -> None:
+    _screen_header("Setup",
+                   "Confirm how the recordings are read: which column is "
+                   "which signal, and which specimens and speeds to include.",
+                   actions=[lambda: st.button("← Back to overview",
+                                              width='stretch',
+                                              on_click=_go, args=("home",))])
+    _breadcrumb("Overview", "Setup")
+
+    # ── Analysis mode ─────────────────────────────────────────────────────────
     _MODE_LABELS = {
-        "reciprocating": "Ballscrew rig  ·  multi-file, stroke segmentation",
-        "continuous":    "Single continuous signal  ·  one file, whole-signal",
+        "reciprocating": "Test rig  ·  a folder of recordings, split into strokes",
+        "continuous":    "Single continuous signal  ·  one file, analysed whole",
     }
-    st.radio(
-        "Analysis mode",
+    st.session_state.setdefault("analysis_mode_ui",
+                                _cfg_saved.get("analysis_mode",
+                                               "reciprocating"))
+    mode = st.radio(
+        "Data type",
         options=list(_MODE_LABELS.keys()),
         format_func=lambda k: _MODE_LABELS[k],
         key="analysis_mode_ui", horizontal=True, disabled=_busy,
-        help="Ballscrew rig: a folder of named CSVs, each split into alternating "
-             "actuations. Single continuous signal: one steady recording (e.g. a "
-             "helicopter vibration file) analysed as a whole — no part/speed "
-             "naming, and torque / angle may be omitted.")
-    if _continuous:
-        st.caption("Continuous mode: point at one CSV, map its columns "
-                   "(Time + RPM or angle required), and run — the whole signal "
-                   "is treated as a single segment.")
+        help="Test rig: a folder of files named <group>-<speed>rpm-<trial>.csv, "
+             "each split into individual strokes. Single continuous signal: "
+             "one steady recording (e.g. a fan or gearbox) analysed as a "
+             "whole — no naming rules, and torque / angle may be left out.")
+    _cont = mode == "continuous"
 
-    # Per-tab readiness metrics
-    _d1, _d2 = st.columns(2)
-    with _d1:
-        if detected and detected.get("n_files", detected["matched"]):
-            _n_total = detected.get("n_files", detected["matched"])
-            st.metric("Data", f"{_n_total} CSV files",
-                      help=f"{detected['matched']} auto-grouped, "
-                           f"{len(detected['parts'])} group(s), "
-                           f"{len(detected['rpms'])} speed class(es).")
-        elif _dd:
-            st.metric("Data", "No files found")
-        else:
-            st.metric("Data", "No folder set")
-    with _d2:
-        if headers and headers["n_files"]:
-            if headers["n_mismatched"] == 0:
-                st.metric("Columns", "All consistent")
-            else:
-                st.metric("Columns",
-                          f"{headers['n_mismatched']} of {headers['n_files']} differ")
-        else:
-            st.metric("Columns", "—")
-
-    sub_data, sub_cols, sub_signals, sub_setup = st.tabs(
-        ["Data source", "Column check", "Signals & columns", "Run setup"])
-
-    # ── Sub-tab: Data source ───────────────────────────────────────────────────
-    with sub_data:
-      if _continuous:
-        # One file drives the whole analysis.
-        f_path, f_btn = st.columns([5, 1])
-        with f_path:
-            single_file_path = st.text_input(
-                "CSV file", key="single_file_input", disabled=_busy,
-                placeholder=r"e.g.  D:\tests\helicopter_vibration.csv",
-                help="A single continuous recording (vibration + a speed "
-                     "reference + time).").strip()
-        with f_btn:
-            st.write("")
-            st.button("Browse", key="browse_file_native",
-                      width='stretch', on_click=_browse_file_native,
-                      args=("browser_file", "single_file_input"),
-                      disabled=_busy)
-        if not single_file_path:
-            st.info("Choose a CSV file above to begin.")
-        elif not os.path.isfile(single_file_path):
-            st.error("That path is not a file.")
-        elif not _cols_avail:
-            st.warning("Could not read any columns from that file — check it is "
-                       "a valid CSV.")
-        else:
-            st.success(f"{len(_cols_avail)} columns detected — "
-                       "map them in the **Signals & columns** tab.")
-
-        # No operating-speed input: order tracking follows the instantaneous RPM,
-        # so a single "nominal RPM" is neither needed nor meaningful for a
-        # variable-speed signal. The RPM range is reported in the run summary.
+    signal_label = _setup.get("signal_label", "signal")
+    if _cont:
         _dflt_label = (os.path.splitext(os.path.basename(single_file_path))[0]
                        if single_file_path else d.signal_label)
-        st.session_state.setdefault("cont_signal_label", _dflt_label)
-        signal_label_val = st.text_input(
-            "Signal label", key="cont_signal_label", disabled=_busy,
-            help="A name for this signal, used in plot titles / result tables "
-                 "in place of the ballscrew part id.").strip() or "signal"
-        nominal_rpm_val = None   # always auto-derived (median of the RPM channel)
-        # Keep the folder-mode vars sane so downstream reads don't break.
-        data_dir = ""
-      else:
-        c_path, c_btn = st.columns([5, 1])
-        with c_path:
-            data_dir = st.text_input(
-                "Raw CSV folder", key="data_dir_input", disabled=_busy,
-                placeholder=r"e.g.  D:\tests\Plastic",
-                help="Folder of CSV exports — one file per trial.").strip()
-        with c_btn:
-            st.write("")
-            st.button("Browse", key="browse_data_native",
-                      width='stretch', on_click=_browse_native,
-                      args=("browser_data", "data_dir_input"),
-                      disabled=_busy)
-        if not _dd:
-            st.info("Set a data folder above to begin.")
-        elif not os.path.isdir(_dd):
-            st.error("That path is not a folder.")
-        elif detected:
-            n_total = detected.get("n_files", detected["matched"])
-            n_matched = detected["matched"]
-            if n_total == 0:
-                st.warning("No CSV files found here. Check the folder.")
-            elif n_matched == n_total:
-                st.success(f"{n_total} CSV file(s) found — "
-                           f"{len(detected['parts'])} group(s), "
-                           f"{len(detected['rpms'])} speed class(es). "
-                           "All files match the auto-grouping naming convention.")
-            elif n_matched > 0:
-                st.success(f"{n_total} CSV file(s) found — {n_matched} auto-grouped, "
-                           f"{n_total - n_matched} need manual assignment (see Run setup).")
-            else:
-                st.warning(f"{n_total} CSV file(s) found. "
-                           "None match the auto-grouping naming format — "
-                           "assign groups manually in Run setup.")
-            if headers and headers.get("all_columns"):
-                st.info(f"{len(headers['all_columns'])} columns detected — "
-                        "review mapping in the **Signals & columns** tab.")
+        st.session_state.setdefault("cont_signal_label",
+                                    _cfg_saved.get("signal_label",
+                                                   _dflt_label))
+        signal_label = st.text_input(
+            "Signal name", key="cont_signal_label", disabled=_busy,
+            help="A name for this signal, used in plot titles and result "
+                 "tables.").strip() or "signal"
 
-    # ── Sub-tab: Column check ──────────────────────────────────────────────────
-    with sub_cols:
-        if not headers or not headers["n_files"]:
-            st.info("Set a valid data folder (Data source tab) to inspect columns.")
-        else:
-            st.caption("Columns are matched by **name**, so a different column "
-                       "order between files is handled automatically. Only "
-                       "missing or unexpected columns need attention.")
-            _nf = headers["n_files"]
-            _nmis = headers["n_mismatched"]
-            _nreord = headers.get("n_reordered", 0)
-            _nident = _nf - _nmis - _nreord
-            _summary = (f"{_nident} identical · {_nreord} reordered (handled) · "
-                        f"{_nmis} need review")
-            if _nmis == 0:
-                st.success(f"All {_nf} file(s) usable — {_summary}. "
-                           f"Reference layout has "
-                           f"{len(headers['reference_columns'])} columns.")
-            else:
-                st.warning(f"{_nmis} of {_nf} file(s) have missing or unexpected "
-                           f"columns and may not process correctly — {_summary}.")
+    st.divider()
 
-            _status_label = {
-                "identical":  "Identical",
-                "reordered":  "Reordered (handled)",
-                "mismatch":   "Missing/extra columns",
-                "empty":      "Empty file",
-            }
-            import pandas as _pd
-            rows = [{
-                "File": fr["name"],
-                "Status": _status_label.get(fr.get("status"),
-                                            "OK" if fr["matches_reference"]
-                                            else "Review"),
-                "Missing columns": ", ".join(fr["missing"]) or "—",
-                "Unexpected columns": ", ".join(fr["extra"]) or "—",
-            } for fr in headers["files"]]
-            st.dataframe(_pd.DataFrame(rows), width='stretch',
-                         hide_index=True)
+    # ── Signals & columns ─────────────────────────────────────────────────────
+    cols_avail = _cols_avail
+    st.markdown("**Vibration signals to analyze**")
+    st.caption("Include one or more accelerometer axes. Excluded axes are "
+               "skipped entirely.")
+    if not cols_avail:
+        st.caption(("Choose a valid CSV file on the overview" if _cont
+                    else "Set a valid data folder on the overview")
+                   + " to map columns. Defaults are used until then.")
+    accel_map: dict = {}
+    _saved_accel = _setup.get("accel_cols") or {}
+    for ax in ("X", "Y", "Z"):
+        c_on, c_sel = st.columns([1, 4])
+        st.session_state.setdefault(f"accel_on_{ax}",
+                                    bool(_saved_accel.get(ax))
+                                    or not _saved_accel)
+        on = c_on.checkbox(f"{ax} axis", key=f"accel_on_{ax}", disabled=_busy)
+        dflt = _saved_accel.get(ax) or _default_for(
+            d.accel_cols.get(ax, ""), cols_avail, *_ACCEL_HINTS[ax])
+        with c_sel:
+            sel = _col_picker(f"{ax} column", cols_avail, dflt,
+                              key=f"accel_col_{ax}", disabled=_busy)
+        if on and sel:
+            accel_map[ax] = sel
+    if not accel_map:
+        st.warning("No signals selected — include at least one axis to run.")
 
-            # Legend so each Status value is self-explanatory.
-            st.caption(
-                "Status — **Identical**: matches the reference exactly · "
-                "**Reordered (handled)**: same columns, different order (fine) · "
-                "**Missing/extra columns**: differs from the reference and may "
-                "not process · **Empty file**: no header row.")
+    st.markdown("**Other columns**")
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        time_sel = _col_picker(
+            "Time", cols_avail, _setup["time_col"], key="map_time",
+            disabled=_busy,
+            help="The timestamp of each sample, in seconds.")
+        rpm_sel = _col_picker(
+            "Speed (RPM)", cols_avail, _setup["rpm_col"], key="map_rpm",
+            disabled=_busy, allow_none=_cont,
+            help="The rotation speed at each sample — used to split strokes "
+                 "and to track orders.")
+    with mc2:
+        angle_sel = _col_picker(
+            "Angle", cols_avail, _setup["angle_col"], key="map_angle",
+            disabled=_busy, allow_none=_cont,
+            help="The shaft angle from the encoder. The most accurate basis "
+                 "for order tracking when present.")
+        torque_sel = _col_picker(
+            "Torque", cols_avail, _setup["torque_col"], key="map_torque",
+            disabled=_busy, allow_none=_cont,
+            help="Drive torque — needed for the Torque & Efficiency analysis "
+                 "only.")
+    if _cont:
+        st.caption("Continuous mode: **Time** and at least one of "
+                   "**RPM / Angle** are required; **Torque** and the unused "
+                   "speed channel may be set to “— none —”.")
 
-            # The reference layout every file is compared against.
-            with st.expander(f"Reference layout — "
-                             f"{len(headers['reference_columns'])} columns"):
-                st.caption("The majority column signature; other files are "
-                           "compared against it by name.")
-                st.code(", ".join(headers["reference_columns"]) or "(none)")
+    st.divider()
 
-            # Per-file header preview — answers exactly what is wrong with a file.
-            _files = headers["files"]
-            if _files:
-                _names = [fr["name"] for fr in _files]
-                _flagged = [fr["name"] for fr in _files
-                            if fr.get("status") in ("mismatch", "empty")]
-                _pick = st.selectbox(
-                    "Preview a file's headers", _names,
-                    index=(_names.index(_flagged[0]) if _flagged else 0),
-                    help="Inspect any file's exact columns and how they differ "
-                         "from the reference.")
-                _fr = next((f for f in _files if f["name"] == _pick), None)
-                if _fr is not None:
-                    st.caption(
-                        f"Status: **{_status_label.get(_fr.get('status'), '—')}**"
-                        f"  ·  {len(_fr['columns'])} columns")
-                    if _fr.get("missing"):
-                        st.markdown("**Missing** (in reference, absent here): "
-                                    + ", ".join(_fr["missing"]))
-                    if _fr.get("extra"):
-                        st.markdown("**Unexpected** (here, not in reference): "
-                                    + ", ".join(_fr["extra"]))
-                    if not _fr.get("missing") and not _fr.get("extra"):
-                        st.caption("Columns match the reference"
-                                   + (" (different order)."
-                                      if _fr.get("status") == "reordered"
-                                      else "."))
-                    st.code(", ".join(_fr["columns"]) or "(empty)")
-
-            if headers["unreadable"]:
-                st.error("Could not read: "
-                         + "; ".join(f"{n} ({e})"
-                                     for n, e in headers["unreadable"]))
-
-    # ── Sub-tab: Signals & columns ─────────────────────────────────────────────
-    with sub_signals:
-        # Continuous mode reads columns from the single file; reciprocating from
-        # the folder's header scan.
-        cols_avail = _cols_avail
-        if not cols_avail:
-            st.caption(("Choose a valid CSV file" if _continuous
-                        else "Set a valid data folder")
-                       + " to map columns. Defaults are used until then.")
-        st.markdown("**Vibration signals to analyze**")
-        st.caption("Include one or more accelerometer axes. Excluded axes are "
-                   "skipped entirely.")
-        _accel_hints = {
-            "X": ("x accel", "accel x", "acc_x", "ax ", "ch1", " x", "X Accel", "accel"),
-            "Y": ("y accel", "accel y", "acc_y", "ay ", "ch2", " y", "Y Accel", "accel"),
-            "Z": ("z accel", "accel z", "acc_z", "az ", "ch3", " z", "Z Accel", "accel"),
-        }
-        accel_cols_map = {}
-        for ax in ("X", "Y", "Z"):
-            c_on, c_sel = st.columns([1, 4])
-            on = c_on.checkbox(f"{ax} axis", value=True, key=f"accel_on_{ax}",
-                               disabled=_busy)
-            dflt = _default_for(d.accel_cols.get(ax, ""), cols_avail,
-                                *_accel_hints[ax])
-            with c_sel:
-                sel = _col_picker(f"{ax} column", cols_avail, dflt,
-                                  key=f"accel_col_{ax}", disabled=_busy)
-            if on and sel:
-                accel_cols_map[ax] = sel
-        if not accel_cols_map:
-            st.warning("No signals selected — include at least one axis to run.")
-
-        st.markdown("**Other columns**")
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            time_col = _col_picker(
-                "Time", cols_avail,
-                _default_for(d.time_col, cols_avail,
-                             "time", "t ", "ts", "timestamp"),
-                key="map_time", disabled=_busy)
-            rpm_col = _col_picker(
-                "Speed (RPM)", cols_avail,
-                _default_for(d.rpm_col, cols_avail,
-                             "rpm", "frequency", "freq", "speed", "rot", "rev"),
-                key="map_rpm", disabled=_busy, allow_none=_continuous)
-        with mc2:
-            # In continuous mode torque and angle are optional (choose "— none —"
-            # to omit); only Time + one speed reference (RPM or angle) is needed.
-            angle_col = _col_picker(
-                "Angle", cols_avail,
-                _default_for(d.angle_col, cols_avail,
-                             "angle", "deg", "encoder", "enc", "pos"),
-                key="map_angle", disabled=_busy, allow_none=_continuous)
-            torque_col = _col_picker(
-                "Torque", cols_avail,
-                _default_for(d.torque_col, cols_avail,
-                             "torque", "nm", "moment", "trq"),
-                key="map_torque", disabled=_busy, allow_none=_continuous)
-        if _continuous:
-            st.caption("Continuous mode: **Time** and at least one of "
-                       "**RPM / Angle** are required; **Torque** and the unused "
-                       "speed channel may be set to “— none —”.")
-
-    # ── Sub-tab: Run setup (groups, speeds, run name) ─────────────────────────
-    with sub_setup:
-      if _continuous:
-        st.caption("Continuous mode analyses the whole signal — no groups or "
-                   "speed classes to select. Set the operating speed and label "
-                   "in the **Data source** tab.")
-      else:
-        st.markdown("**Groups & speeds to include**")
+    # ── Groups & speeds (test-rig mode only) ─────────────────────────────────
+    sel_parts, sel_rpms = list(parts), list(rpms)
+    if not _cont:
+        st.markdown("**Specimens & speeds to include**")
         if detected and detected["parts"]:
-            # Keyed selections persist across reruns and can be pre-filled by
-            # "Load settings"; seed to all detected, and keep them valid against
-            # the current folder's options (a folder change re-seeds via the
-            # reset block below).
             _opts_p, _opts_r = detected["parts"], detected["rpms"]
-            st.session_state.setdefault("setup_parts", list(_opts_p))
-            st.session_state.setdefault("setup_rpms", list(_opts_r))
+            st.session_state.setdefault(
+                "setup_parts", [p for p in parts if p in _opts_p] or
+                list(_opts_p))
+            st.session_state.setdefault(
+                "setup_rpms", [r for r in rpms if r in _opts_r] or
+                list(_opts_r))
             st.session_state["setup_parts"] = [
                 p for p in st.session_state["setup_parts"] if p in _opts_p]
             st.session_state["setup_rpms"] = [
                 r for r in st.session_state["setup_rpms"] if r in _opts_r]
-            parts = st.multiselect(
-                "Groups / specimens", options=_opts_p, key="setup_parts",
+            sel_parts = st.multiselect(
+                "Specimens", options=_opts_p, key="setup_parts",
                 disabled=_busy,
-                help="Detected from filenames. Deselect to exclude.")
-            rpms = st.multiselect(
+                help="Detected from the file names. Deselect to exclude.")
+            sel_rpms = st.multiselect(
                 "Speed classes", options=_opts_r, key="setup_rpms",
                 disabled=_busy, format_func=str)
-            st.session_state["_detected_parts"] = parts
-            st.session_state["_detected_rpms"] = rpms
-            st.caption(f"{detected['matched']} file(s) · {len(detected['parts'])} "
-                       f"group(s) · {len(detected['rpms'])} speed class(es).")
-            if detected["counts"]:
-                st.dataframe(detected["counts"], width='stretch',
-                             hide_index=True)
+            st.caption(f"{detected['matched']} file(s) · "
+                       f"{len(detected['parts'])} specimen(s) · "
+                       f"{len(detected['rpms'])} speed class(es).")
             if detected["unmatched"]:
-                with st.expander(f"Assign groups to {len(detected['unmatched'])} "
-                                 "file(s) not auto-recognized"):
-                    st.caption("Files without a group assignment will not be "
-                               "processed by segmentation. Rename them as "
-                               "`<group>-<speed>rpm-<trial>.csv` for full pipeline "
-                               "support.")
+                with st.expander(f"Assign groups to "
+                                 f"{len(detected['unmatched'])} file(s) "
+                                 "not auto-recognized"):
+                    st.caption("Files without a group are not processed. "
+                               "Rename them `<group>-<speed>rpm-<trial>.csv` "
+                               "for full support, or assign here.")
                     _manual_parts: list = []
                     _manual_rpms: list = []
-                    _hc1, _hc2, _hc3 = st.columns([3, 2, 2])
-                    _hc1.caption("File")
-                    _hc2.caption("Group")
-                    _hc3.caption("RPM")
                     for _uf in detected["unmatched"][:50]:
                         _uc1, _uc2, _uc3 = st.columns([3, 2, 2])
                         _uc1.write(_uf)
@@ -1871,112 +1836,333 @@ with tab_define:
                                     _manual_rpms.append(_urv)
                             except ValueError:
                                 pass
-                    for _mp in _manual_parts:
-                        if _mp not in parts:
-                            parts = list(parts) + [_mp]
-                    for _mr in _manual_rpms:
-                        if _mr not in rpms:
-                            rpms = list(rpms) + [_mr]
-            with st.expander("Define groups / speeds manually"):
-                st.caption("Comma-separated. Leave blank to use the selections "
-                           "above.")
-                _po = st.text_input("Groups override", "", disabled=_busy)
-                _ro = st.text_input("Speeds override", "", disabled=_busy)
-                if _csv_list(_po):
-                    parts = _po
-                if _csv_list(_ro):
-                    rpms = _ro
+                    sel_parts = list(sel_parts) + [
+                        p for p in _manual_parts if p not in sel_parts]
+                    sel_rpms = list(sel_rpms) + [
+                        r for r in _manual_rpms if r not in sel_rpms]
         else:
-            if _dd and os.path.isdir(_dd):
-                st.warning("No recognized `<group>-<rpm>rpm-<trial>.csv` files "
-                           "here. Enter groups and speeds manually.")
+            st.info("Set a data folder on the overview, or define specimens "
+                    "and speeds manually.")
+            _po = st.text_input("Specimens (comma-separated)",
+                                value=", ".join(str(p) for p in parts),
+                                disabled=_busy)
+            _ro = st.text_input("Speed classes (comma-separated)",
+                                value=", ".join(str(r) for r in rpms),
+                                disabled=_busy)
+            sel_parts = _csv_list(_po)
+            sel_rpms = _as_int_list(_ro)
+
+        st.divider()
+
+        # ── Column consistency check ─────────────────────────────────────────
+        with st.expander("Column consistency across files"):
+            if not headers or not headers["n_files"]:
+                st.info("Set a valid data folder to inspect columns.")
             else:
-                st.info("Set a data folder, or define groups and speeds manually.")
-            parts = st.text_input("Groups (comma-separated)",
-                                  value=", ".join(d.parts), disabled=_busy)
-            rpms = st.text_input("Speed classes (comma-separated)",
-                                 value=", ".join(str(r) for r in d.rpms),
-                                 disabled=_busy)
+                st.caption("Columns are matched by **name**, so a different "
+                           "column order between files is handled "
+                           "automatically. Only missing or unexpected "
+                           "columns need attention.")
+                _nf = headers["n_files"]
+                _nmis = headers["n_mismatched"]
+                _nreord = headers.get("n_reordered", 0)
+                _summary = (f"{_nf - _nmis - _nreord} identical · "
+                            f"{_nreord} reordered (handled) · "
+                            f"{_nmis} need review")
+                if _nmis == 0:
+                    st.success(f"All {_nf} file(s) usable — {_summary}.")
+                else:
+                    st.warning(f"{_nmis} of {_nf} file(s) have missing or "
+                               f"unexpected columns — {_summary}.")
+                _status_label = {
+                    "identical":  "Identical",
+                    "reordered":  "Reordered (handled)",
+                    "mismatch":   "Missing/extra columns",
+                    "empty":      "Empty file",
+                }
+                import pandas as _pd
+                rows = [{
+                    "File": fr["name"],
+                    "Status": _status_label.get(fr.get("status"), "Review"),
+                    "Missing columns": ", ".join(fr["missing"]) or "—",
+                    "Unexpected columns": ", ".join(fr["extra"]) or "—",
+                } for fr in headers["files"]]
+                st.dataframe(_pd.DataFrame(rows), width='stretch',
+                             hide_index=True)
+                if headers["unreadable"]:
+                    st.error("Could not read: "
+                             + "; ".join(f"{n} ({e})"
+                                         for n, e in headers["unreadable"]))
 
-      # Run naming applies to both modes.
-      st.divider()
-      st.markdown("**Name this run**")
-      nc1, nc2 = st.columns([5, 1])
-      with nc1:
-          run_name = st.text_input(
-              "Run name", key="run_name_input", disabled=_busy,
-              help="The sub-folder this run is saved under.").strip()
-      with nc2:
-          st.write("")
-          st.button("Auto-name", width='stretch',
-                    on_click=_auto_name_run, disabled=_busy,
-                    help="Generate a name from the date and your selections.")
-      _full_out = os.path.join(results_root.strip() or "results",
-                               run_name or "run")
-      st.caption(f"Will be saved to:  `{_full_out}`")
-      st.caption("Next: open the **Run** tab to choose analyses and start.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 2 — Run
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_run:
-    _screen_header("Run",
-                   "Choose which analyses to run and start the pipeline.")
-    _breadcrumb("Run")
-    _primary_stages = [k for k in STAGES if k != "report"]
-    st.metric("Analyses available", str(len(_primary_stages)),
-              help="Segmentation + 4 analysis modules. "
-                   "Add Handover Report for deliverable tables.")
-
-    # ── Analysis tiles — one card per module, pick by checking its tile ───────
-    _STAGE_TILES = {
-        "segment":    ("🧩", "Split every raw recording into individual "
-                             "strokes. Runs first — every analysis reads its "
-                             "output."),
-        "vibration":  ("📈", "Overall shake level (RMS) per stroke — the "
-                             "headline metal-vs-plastic comparison."),
-        "efficiency": ("⚙️", "Drive torque and an efficiency proxy per speed "
-                             "class — the mechanical cost of each design."),
-        "order":      ("🎯", "Vibration mapped to shaft position — pinpoints "
-                             "ball-pass content vs ordinary shaft orders."),
-        "envelope":   ("🔔", "Bearing-impact detection — demodulates the "
-                             "resonance that repetitive defects ring."),
-        "report":     ("📋", "Deliverable tables: sample summary, actuation "
-                             "snapshot and the cross-stage one-pager."),
+    # ── Persist — the overview and the run builder read this dict ────────────
+    st.session_state["_cfg"] = {
+        "analysis_mode": mode,
+        "signal_label": signal_label,
+        "time_col": time_sel,
+        "rpm_col": rpm_sel,
+        "angle_col": angle_sel,
+        "torque_col": torque_sel,
+        "accel_cols": accel_map,
+        "parts": list(sel_parts),
+        "rpms": [int(r) for r in sel_rpms] if sel_rpms else [],
     }
-    with st.container(border=True):
-        st.subheader("Analyses")
-        st.caption("Pick the analyses to run. The analysis modules run in "
-                   "parallel after data preparation.")
-        stage_labels = {k: v["label"] for k, v in STAGES.items()}
-        # Continuous mode has no torque/angle, so efficiency is not offered.
-        _stage_opts = [k for k in STAGES if not (_continuous and k == "efficiency")]
-        _stage_default = [k for k in _primary_stages
-                          if not (_continuous and k == "efficiency")]
-        chosen = []
-        _tile_cols = st.columns(3)
-        for _ti, _sk in enumerate(_stage_opts):
-            _icon, _desc = _STAGE_TILES.get(_sk, ("•", ""))
-            with _tile_cols[_ti % 3]:
-                with st.container(border=True):
-                    if st.checkbox(f"{_icon}  **{stage_labels[_sk]}**",
-                                   value=_sk in _stage_default,
-                                   key=f"stage_tile_{_sk}", disabled=_busy):
-                        chosen.append(_sk)
-                    st.caption(_desc)
-        if _continuous:
-            st.caption("Efficiency & torque are omitted in continuous mode "
-                       "(they require torque / angle channels).")
-        auto_include_segment = st.checkbox(
-            "Prepare data automatically when needed", value=True, disabled=_busy,
-            help="If later analyses are selected but the data hasn't been "
-                 "segmented yet, run segmentation first.")
 
-    with st.expander("Advanced parameters"):
-        st.caption("Order / envelope tuning. The defaults suit the standard setup.")
-        # Keyed (seeded via setdefault, no value=) so values persist across reruns
-        # and can be pre-filled by "Load settings"; avoids the value=/state warning.
+    st.button("← Back to overview", on_click=_go, args=("home",),
+              type="primary")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  VIEW: REPORT  —  deep dive behind the Status panel
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _page_report() -> None:
+    if not past_runs:
+        _screen_header("Report", "Full results for one analysis run.")
+        _state("empty",
+               "No completed runs in this workspace yet. Run an analysis "
+               "from the overview to create one.",
+               cta=lambda: st.button("← Back to overview",
+                                     on_click=_go, args=("home",)))
+        return
+
+    names = {pr["manifest"]: pr["name"] for pr in past_runs}
+    options = list(names)
+    current = st.session_state.get("report_manifest")
+    if current not in options:
+        current = options[0]
+    sel = st.selectbox("Run", options,
+                       index=options.index(current),
+                       format_func=lambda m: names[m],
+                       help="Every completed run in this workspace.")
+    st.session_state["report_manifest"] = sel
+    st.session_state["_report_viewed"] = True
+    _render_results(sel, key_prefix=f"rep{options.index(sel)}",
+                    on_close=lambda: _go("home"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  VIEW: HOME  —  the three-panel overview (Data · Analyze · Status)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _panel_data_source() -> None:
+    st.markdown("#### Data source")
+
+    if _continuous:
+        f_path, f_btn = st.columns([3, 1])
+        with f_path:
+            st.text_input(
+                "CSV file", key="single_file_input", disabled=_busy,
+                placeholder=r"e.g.  D:\tests\fan_rig.csv",
+                help="One continuous recording: vibration, a speed "
+                     "reference and time.")
+        with f_btn:
+            st.write("")
+            st.button("Browse", key="browse_file_native", width='stretch',
+                      on_click=_browse_file_native,
+                      args=("browser_file", "single_file_input"),
+                      disabled=_busy)
+        if not single_file_path:
+            st.info("Choose a CSV file to begin.")
+        elif not _single_valid:
+            st.error("That path is not a file.")
+        elif not _cols_avail:
+            st.warning("Could not read any columns — check it is a valid CSV.")
+        else:
+            st.success(f"{len(_cols_avail)} columns detected.")
+    else:
+        c_path, c_btn = st.columns([3, 1])
+        with c_path:
+            st.text_input(
+                "Data folder", key="data_dir_input", disabled=_busy,
+                placeholder=r"e.g.  D:\tests\campaign1",
+                help="Folder of CSV recordings — one file per trial, named "
+                     "<group>-<speed>rpm-<trial>.csv.")
+        with c_btn:
+            st.write("")
+            st.button("Browse", key="browse_data_native", width='stretch',
+                      on_click=_browse_native,
+                      args=("browser_data", "data_dir_input"),
+                      disabled=_busy)
+
+        # First-visit onboarding: an empty app offers the demo campaign.
+        if not _dd and not past_runs:
+            with st.container(border=True):
+                st.markdown("**New here?**")
+                st.caption("Create the demo workspace: a small synthetic "
+                           "test campaign with known answers. It runs a "
+                           "full analysis immediately, so you can explore "
+                           "every screen with data whose correct results "
+                           "are documented.")
+                st.button("Create demo workspace", type="primary",
+                          disabled=_busy, on_click=_launch_demo_workspace)
+
+        if _dd and not os.path.isdir(_dd):
+            st.error("That path is not a folder.")
+        elif detected:
+            n_total = detected.get("n_files", detected["matched"])
+            n_matched = detected["matched"]
+            if n_total == 0:
+                st.warning("No CSV files found here.")
+            elif n_matched == n_total:
+                st.success(f"{n_total} file(s) — all recognized.")
+            elif n_matched > 0:
+                st.warning(f"{n_total} file(s) — {n_matched} recognized, "
+                           f"{n_total - n_matched} need a group "
+                           "(assign in Setup).")
+            else:
+                st.warning(f"{n_total} file(s) found, none match the "
+                           "`<group>-<speed>rpm-<trial>.csv` naming — "
+                           "assign groups in Setup.")
+
+        # Drag & drop straight into the data folder (files stay local; the
+        # app server runs on this machine).
+        with st.expander("Add files — drag & drop"):
+            ups = st.file_uploader(
+                "Drop CSV file(s) here", type=["csv"],
+                accept_multiple_files=True, key="dropzone", disabled=_busy,
+                help="Dropped files are copied into the data folder above.")
+            if ups:
+                target = _dd
+                if not target:
+                    target = os.path.join(results_root.strip() or ".",
+                                          "incoming_data")
+                saved_ids = st.session_state.setdefault("_dropped_ids", set())
+                n_new = 0
+                for up in ups:
+                    fid = (up.name, getattr(up, "size", len(up.getvalue())))
+                    if fid in saved_ids:
+                        continue
+                    os.makedirs(target, exist_ok=True)
+                    dest = os.path.join(target, os.path.basename(up.name))
+                    with open(dest, "wb") as fh:
+                        fh.write(up.getvalue())
+                    saved_ids.add(fid)
+                    n_new += 1
+                if n_new:
+                    if not _dd:
+                        st.session_state["data_dir_input"] = target
+                    st.toast(f"Added {n_new} file(s) to "
+                             f"{os.path.basename(target)}.")
+                    st.rerun()
+
+        # File explorer: what was recognized, grouped.
+        if detected and detected["counts"]:
+            with st.expander(
+                    f"File explorer — {detected['matched']} recognized"):
+                import pandas as _pd
+                st.dataframe(_pd.DataFrame(detected["counts"]),
+                             width='stretch', hide_index=True)
+                if detected["unmatched"]:
+                    st.caption("Not recognized: "
+                               + ", ".join(detected["unmatched"][:10]))
+
+    # Workspace guide (present in the demo workspace, or any workspace that
+    # ships one next to its data folder).
+    _guide = st.session_state.get("_demo_guide")
+    if not _guide and _dd:
+        _cand = os.path.join(os.path.dirname(_dd.rstrip("\\/")),
+                             "WORKSPACE_GUIDE.md")
+        _guide = _cand if os.path.isfile(_cand) else None
+    if _guide and os.path.isfile(_guide):
+        with st.expander("📖 Workspace guide — what to look for"):
+            try:
+                with open(_guide, "r", encoding="utf-8") as fh:
+                    st.markdown(fh.read())
+            except Exception:
+                st.caption("(Guide could not be read.)")
+
+    # ── Summary strip ─────────────────────────────────────────────────────────
+    st.divider()
+    _first_csv = None
+    if _continuous and _single_valid:
+        _first_csv = single_file_path
+    elif detected and detected["counts"] and _dd:
+        for _n in sorted(os.listdir(_dd)):
+            if _n.lower().endswith(".csv"):
+                _first_csv = os.path.join(_dd, _n)
+                break
+    _fs = (_probe_fs(_first_csv, _dir_mtime(_first_csv))
+           if _first_csv else None)
+    _n_files = (1 if (_continuous and _single_valid)
+                else (detected.get("n_files", 0) if detected else 0))
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Files", str(_n_files) if _n_files else "—")
+    s2.metric("Channels", str(len(_cols_avail)) if _cols_avail else "—",
+              help="Columns detected in the recordings.")
+    s3.metric("Sampling rate",
+              f"{_fs / 1000:.1f} kHz" if _fs and _fs >= 1000
+              else (f"{_fs:.0f} Hz" if _fs else "—"),
+              help="Estimated from the time column of the first file.")
+    if not _continuous and detected and detected["parts"]:
+        st.caption(f"{len(parts)}/{len(_detected_parts)} specimen(s) and "
+                   f"{len(rpms)}/{len(_detected_rpms)} speed class(es) "
+                   "selected — change in Setup.")
+
+    st.button("Define setup →", width='stretch', disabled=_busy,
+              on_click=_go, args=("setup",),
+              help="Column mapping, specimens & speeds, consistency checks.")
+
+
+def _panel_analyze() -> tuple:
+    """Center panel. Returns (chosen_stages, run_options dict)."""
+    st.markdown("#### Analyze")
+
+    _STAGE_TILES = {
+        "segment":    ("🧩", "Split recordings into individual strokes. "
+                             "Runs first."),
+        "vibration":  ("📈", "Overall shake level (RMS) per stroke."),
+        "efficiency": ("⚙️", "Drive torque + efficiency per speed."),
+        "order":      ("🎯", "Vibration per shaft revolution — finds "
+                             "ball-pass content."),
+        "envelope":   ("🔔", "Bearing-impact detection via the resonance "
+                             "band."),
+        "report":     ("📋", "Deliverable summary tables."),
+    }
+    stage_labels = {k: v["label"] for k, v in STAGES.items()}
+    _stage_opts = [k for k in STAGES
+                   if not (_continuous and k == "efficiency")]
+    _stage_default = [k for k in STAGES if k != "report"
+                      and not (_continuous and k == "efficiency")]
+    chosen = []
+    _tile_cols = st.columns(2)
+    for _ti, _sk in enumerate(_stage_opts):
+        _icon, _desc = _STAGE_TILES.get(_sk, ("•", ""))
+        with _tile_cols[_ti % 2]:
+            with st.container(border=True):
+                if st.checkbox(f"{_icon}  **{stage_labels[_sk]}**",
+                               value=_sk in _stage_default,
+                               key=f"stage_tile_{_sk}", disabled=_busy):
+                    chosen.append(_sk)
+                st.caption(_desc)
+    if _continuous:
+        st.caption("Efficiency & torque are omitted in continuous mode "
+                   "(they need torque / angle channels).")
+
+    nc1, nc2 = st.columns([3, 1])
+    with nc1:
+        st.text_input("Run name", key="run_name_input", disabled=_busy,
+                      help="The sub-folder this run is saved under.")
+    with nc2:
+        st.write("")
+        st.button("Auto-name", width='stretch', disabled=_busy,
+                  on_click=_auto_name_run,
+                  help="Generate a name from the date and your selections.")
+    st.session_state["_detected_parts"] = parts
+    st.session_state["_detected_rpms"] = rpms
+
+    auto_include_segment = st.checkbox(
+        "Prepare data automatically when needed", value=True, disabled=_busy,
+        help="If later analyses are selected but the data hasn't been "
+             "segmented yet, run segmentation first.")
+    st.session_state.setdefault("render_plots", True)
+    render_plots = st.checkbox(
+        "Generate figures", key="render_plots", disabled=_busy,
+        help="Uncheck for a fast numbers-only run. Tables and interactive "
+             "charts are always produced; static PNG figures are skipped.")
+
+    with st.expander("Advanced options"):
+        st.caption("Order / envelope tuning. The defaults suit the standard "
+                   "setup — hover any field for a plain-English explanation.")
         for _k, _v in (("adv_samples_per_rev", d.samples_per_rev),
                        ("adv_ball_pass_order", d.ball_pass_order),
                        ("adv_n_bpf_harmonics", d.n_bpf_harmonics),
@@ -1994,332 +2180,295 @@ with tab_run:
             st.session_state.setdefault(_k, _v)
         ac1, ac2 = st.columns(2)
         with ac1:
-            samples_per_rev = st.number_input(
+            st.number_input(
                 "samples_per_rev", step=1, key="adv_samples_per_rev",
                 disabled=_busy,
-                help="How finely each shaft revolution is resampled for order "
-                     "analysis. The highest readable order is half this value "
-                     "(128 → order 64). Raise only if you must see very high "
-                     "orders; it multiplies compute time.")
-            ball_pass_order = st.number_input(
+                help="How finely each shaft revolution is resampled. The "
+                     "highest readable order is half this value (128 → "
+                     "order 64). Raising it multiplies compute time.")
+            st.number_input(
                 "ball_pass_order", step=0.01, format="%.2f",
                 key="adv_ball_pass_order", disabled=_busy,
-                help="How many balls pass a fixed point per shaft revolution — "
-                     "the fingerprint of a recirculation defect. Comes from "
-                     "the ballscrew geometry (5.35 for this hardware); change "
-                     "it only when analysing a different screw.")
-            n_bpf_harmonics = st.number_input(
+                help="How many balls pass a fixed point per shaft "
+                     "revolution — the fingerprint of a recirculation "
+                     "defect. Comes from the screw geometry; change it only "
+                     "for different hardware.")
+            st.number_input(
                 "n_bpf_harmonics", step=1, key="adv_n_bpf_harmonics",
                 disabled=_busy,
                 help="How many multiples of the ball-pass order to mark and "
-                     "integrate (4 → 5.35, 10.7, 16.05, 21.4). A real defect "
-                     "usually shows several harmonics; noise shows one.")
-            bp_filter_order = st.number_input(
+                     "integrate. A real defect usually shows several "
+                     "multiples; noise shows one.")
+            st.number_input(
                 "bp_filter_order", step=1, key="adv_bp_filter_order",
                 disabled=_busy,
-                help="Steepness of the band-pass filter used in the "
-                     "single-actuation extraction plot. 4 is a good default; "
-                     "higher = sharper edges but more ringing.")
-            min_revolutions = st.number_input(
+                help="Steepness of the band-pass filter in the "
+                     "single-stroke extraction plot. 4 is a good default.")
+            st.number_input(
                 "min_revolutions", step=0.5, format="%.1f",
                 key="adv_min_revolutions", disabled=_busy,
-                help="Minimum ballscrew rotations per actuation segment to "
-                     "include in order/envelope analysis. Typical actuations "
-                     "cover 3–5 revolutions; raise for finer order resolution "
-                     "at the cost of rejecting short strokes.")
+                help="Minimum shaft rotations per stroke to include it in "
+                     "order/envelope analysis. Raise for finer order "
+                     "resolution at the cost of rejecting short strokes.")
         with ac2:
-            bp_min_hz = st.number_input("bp_min_hz", step=50.0,
-                                        key="adv_bp_min_hz", disabled=_busy,
-                                        help="Envelope search floor at max RPM "
-                                             "(2300 RPM → 1000 Hz). Scaled down "
-                                             "automatically per actuation.")
-            bp_min_hz_abs = st.number_input(
-                "bp_min_hz_abs", step=10.0,
-                key="adv_bp_min_hz_abs", disabled=_busy,
-                help="Absolute minimum search frequency (Hz). "
-                     "Never searches below this value regardless of RPM. "
-                     "Raise to ~1000 for high-RPM-only datasets.")
-            bp_min_bw_hz = st.number_input(
+            st.number_input(
+                "bp_min_hz", step=50.0, key="adv_bp_min_hz", disabled=_busy,
+                help="Impact-band search floor at max speed. Scaled down "
+                     "automatically per stroke.")
+            st.number_input(
+                "bp_min_hz_abs", step=10.0, key="adv_bp_min_hz_abs",
+                disabled=_busy,
+                help="Absolute minimum search frequency (Hz), regardless "
+                     "of speed.")
+            st.number_input(
                 "bp_min_bw_hz", step=50.0, key="adv_bp_min_bw_hz",
                 disabled=_busy,
-                help="Narrowest resonance band the search may pick (Hz). "
-                     "Too narrow drops the modulation sidebands the envelope "
-                     "needs and defect detection collapses — keep ≥ 200 Hz "
-                     "unless you know the resonance is very sharp.")
-            kurtogram_levels = st.number_input(
+                help="Narrowest impact band the search may pick (Hz). Too "
+                     "narrow drops the sidebands the envelope needs — keep "
+                     "≥ 200 Hz unless the resonance is very sharp.")
+            st.number_input(
                 "kurtogram_levels", step=1, key="adv_kurtogram_levels",
                 disabled=_busy,
-                help="How finely the impact-band search divides the frequency "
-                     "axis (each level halves the band width). Higher = finer "
-                     "search but slower; the bandwidth floor above still "
-                     "limits the effective depth.")
-            bp_max_hz = st.number_input(
+                help="How finely the impact-band search divides the "
+                     "frequency axis (each level halves the band width). "
+                     "Higher = finer but slower.")
+            st.number_input(
                 "bp_max_hz", step=500.0, key="adv_bp_max_hz", disabled=_busy,
-                help="Upper bound (Hz) on the envelope resonance band — keep it "
-                     "inside the accelerometer's calibrated range. Sensor here is "
-                     "flat to 9 kHz (±5%) / 12 kHz (±10%); above ~12 kHz "
-                     "the kurtogram latches onto sensor noise. Also capped at "
-                     "0.8×Nyquist automatically.")
-
+                help="Upper limit (Hz) for the impact band — keep it inside "
+                     "the accelerometer's calibrated range so the search "
+                     "can't latch onto sensor noise.")
         st.divider()
-        st.caption("Steady-state gating — analyse only the constant-speed "
-                   "plateau of each actuation (excludes ramp-up/ramp-down). "
-                   "Affects order, torque, efficiency and envelope.")
         pg1, pg2 = st.columns(2)
         with pg1:
-            plateau_gating = st.checkbox(
+            st.checkbox(
                 "Plateau gating", key="adv_plateau_gating", disabled=_busy,
-                help="On: steady-state metrics use only the plateau, so ramps "
-                     "don't bias torque/efficiency and don't collapse the "
-                     "high-RPM order ceiling. Off: use the full stroke (legacy).")
+                help="On: steady-state numbers use only the constant-speed "
+                     "part of each stroke, so ramps don't bias torque, "
+                     "efficiency or the order ceiling. Off: full stroke.")
         with pg2:
-            plateau_frac = st.number_input(
+            st.number_input(
                 "plateau_frac", min_value=0.1, max_value=1.0, step=0.05,
                 format="%.2f", key="adv_plateau_frac", disabled=_busy,
-                help="Plateau = |RPM| ≥ this fraction of the nominal speed. "
-                     "0.90 keeps the constant-speed portion; lower it if strokes "
-                     "are short and too many fall back to full-stroke.")
-
-        st.divider()
-        st.caption("Campbell waterfall — order × measured-RPM map built from the "
-                   "ramp sweep of each stroke (uses the ramp data the plateau "
-                   "gate excludes elsewhere).")
+                help="'Constant speed' means at least this fraction of the "
+                     "nominal speed. Lower it if strokes are short and too "
+                     "many fall back to the full stroke.")
         cb1, cb2 = st.columns(2)
         with cb1:
-            campbell_window_rev = st.number_input(
-                "campbell_window_rev", min_value=0.5, max_value=10.0, step=0.25,
-                format="%.2f", key="adv_campbell_window_rev", disabled=_busy,
-                help="Window length in revolutions. Order resolution ≈ 1/this; "
-                     "shorter = finer speed axis but coarser orders.")
+            st.number_input(
+                "campbell_window_rev", min_value=0.5, max_value=10.0,
+                step=0.25, format="%.2f", key="adv_campbell_window_rev",
+                disabled=_busy,
+                help="Speed-map window length in revolutions. Order "
+                     "resolution ≈ 1/this; shorter = finer speed axis but "
+                     "coarser orders.")
         with cb2:
-            campbell_rpm_bin = st.number_input(
+            st.number_input(
                 "campbell_rpm_bin", min_value=5.0, max_value=500.0, step=5.0,
                 format="%.0f", key="adv_campbell_rpm_bin", disabled=_busy,
-                help="RPM-axis bin width for the Campbell map (smaller = more "
-                     "speed bins).")
+                help="Speed-axis bin width for the speed map (smaller = "
+                     "more bins).")
 
-    st.session_state.setdefault("render_plots", True)
-    render_plots = st.checkbox(
-        "Generate plots", key="render_plots", disabled=_busy,
-        help="Uncheck for a fast numbers-only run. "
-             "CSV / parquet results are always written; "
-             "PNG figures are skipped and can be generated later from the Review tab.")
+    return chosen, {"auto_include_segment": auto_include_segment,
+                    "render_plots": render_plots}
 
-    # The category multiselects already act as the analysis filter; no separate
-    # only_parts / only_rpms inputs are needed.
-    only_parts = ""
-    only_rpms = ""
 
-    # ── Readiness gating — disable the button with a clear reason ───────────────
-    blockers = []
-    if _continuous:
-        if not single_file_path:
-            blockers.append("choose a CSV file (Define & Setup > Data source)")
-        elif not os.path.isfile(single_file_path):
-            blockers.append("the CSV file path is not valid")
-        if not (rpm_col or angle_col):
-            blockers.append("map a speed reference — RPM or angle "
-                            "(Define & Setup > Signals & columns)")
-    else:
-        if not data_dir:
-            blockers.append("set a data folder (Define & Setup > Data source)")
-        elif not os.path.isdir(data_dir):
-            blockers.append("the data folder path is not valid")
-    if not accel_cols_map:
-        blockers.append("include at least one vibration signal "
-                        "(Define & Setup > Signals & columns)")
-    if not str(run_name).strip():
-        blockers.append("name the run (Define & Setup > Run setup)")
-    if not chosen:
-        blockers.append("select at least one analysis above")
+def _run_analysis(chosen: list, opts: dict) -> None:
+    """Validate, persist the config next to the results, and spawn the run."""
+    _rr = results_root.strip() or "results"
+    _rn = run_name or _generate_run_name(parts, rpms)
+    form = dict(
+        analysis_mode=("continuous" if _continuous else "reciprocating"),
+        single_file=single_file_path, nominal_rpm=None,
+        signal_label=_setup.get("signal_label", "signal"),
+        data_dir=data_dir, output_root=os.path.join(_rr, _rn),
+        parts=parts, rpms=rpms,
+        time_col=_setup["time_col"], rpm_col=_setup["rpm_col"],
+        angle_col=_setup["angle_col"], torque_col=_setup["torque_col"],
+        accel_cols=_setup["accel_cols"],
+        samples_per_rev=st.session_state["adv_samples_per_rev"],
+        ball_pass_order=st.session_state["adv_ball_pass_order"],
+        n_bpf_harmonics=st.session_state["adv_n_bpf_harmonics"],
+        bp_min_hz=st.session_state["adv_bp_min_hz"],
+        bp_min_hz_abs=st.session_state["adv_bp_min_hz_abs"],
+        bp_min_bw_hz=st.session_state["adv_bp_min_bw_hz"],
+        kurtogram_levels=st.session_state["adv_kurtogram_levels"],
+        bp_filter_order=st.session_state["adv_bp_filter_order"],
+        min_revolutions=st.session_state["adv_min_revolutions"],
+        bp_max_hz=st.session_state["adv_bp_max_hz"],
+        plateau_gating=st.session_state["adv_plateau_gating"],
+        plateau_frac=st.session_state["adv_plateau_frac"],
+        campbell_window_rev=st.session_state["adv_campbell_window_rev"],
+        campbell_rpm_bin=st.session_state["adv_campbell_rpm_bin"],
+        only_parts="", only_rpms="",
+        render_plots=opts["render_plots"],
+    )
+    cfg = _config_from_form(form)
+    set_active(cfg)
 
-    # Surface the outcome of the previous run (set when the poller finished).
-    _msg = st.session_state.pop("last_run_msg", None)
-    if _msg:
-        {"success": st.success, "warning": st.warning,
-         "error": st.error}.get(_msg[0], st.info)(_msg[1])
+    if "segment" in chosen and not _continuous:
+        scan = _discover(cfg.data_dir, _dir_mtime(cfg.data_dir))
+        if scan["matched"] == 0:
+            st.error("No recognized CSV files were found in:\n\n"
+                     f"{cfg.data_dir}\n\nNothing to process.")
+            st.stop()
 
+    chosen_stages = list(chosen)
+    if ("segment" not in chosen_stages
+            and not os.path.isdir(seg_data_dir(cfg))):
+        if opts["auto_include_segment"]:
+            chosen_stages = ["segment"] + chosen_stages
+            st.info("Preparing data (segmentation) first so the selected "
+                    "analyses have input.")
+        else:
+            st.error("This data hasn't been prepared yet. Enable "
+                     "\"Prepare data automatically\", or select the "
+                     "Segmentation tile.")
+            st.stop()
+    chosen_stages = [s for s in STAGES if s in chosen_stages]
+
+    os.makedirs(cfg.output_root, exist_ok=True)
+    cfg_path = os.path.join(cfg.output_root, "nvh_config.json")
+    cfg.to_json(cfg_path)
+    os.environ["NVH_CONFIG"] = os.path.abspath(cfg_path)
+    _remember_root(_rr)
+    if cfg.data_dir:
+        _remember_data_dir(cfg.data_dir)
+
+    st.session_state["run_job"] = _spawn_run(
+        os.path.abspath(cfg_path), chosen_stages, cfg.output_root)
+    st.session_state["running"] = True
+    st.rerun()
+
+
+def _panel_status() -> None:
+    st.markdown("#### Investigate & status")
+
+    # ── Current processing ────────────────────────────────────────────────────
     if _busy:
-        # A run is in progress. The live poller (bar, checklist, abort) lives in
-        # the sidebar so it stays visible on every tab — show a calm pointer here
-        # rather than a second poller racing the same completion rerun.
         _job = st.session_state.get("run_job") or {}
-        _state("loading",
-               "An analysis is running. Live progress and the Abort button are "
-               f"in the sidebar. Saving to {_job.get('out_root', '')}.")
+        with st.container(border=True):
+            st.markdown("**Current processing**")
+            st.caption("Active run: "
+                       f"{os.path.basename(_job.get('out_root', '')) or '…'}")
+            _render_progress(_job)
     else:
-        if blockers:
-            st.warning("Before running, please " + "; ".join(blockers) + ".")
-        run_clicked = st.button("Run analysis", type="primary",
-                                width='stretch', disabled=bool(blockers))
+        _msg = st.session_state.pop("last_run_msg", None)
+        if _msg:
+            {"success": st.success, "warning": st.warning,
+             "error": st.error}.get(_msg[0], st.info)(_msg[1])
+            if (_msg[0] == "success"
+                    and st.session_state.get("report_manifest")):
+                st.button("Open the report →", type="primary",
+                          on_click=_open_report,
+                          args=(st.session_state["report_manifest"],))
 
-        if run_clicked:
-            _rr = results_root.strip() or "results"
-            _rn = run_name or _generate_run_name(_as_str_list(parts),
-                                                 _as_int_list(rpms))
-            _computed_output_root = os.path.join(_rr, _rn)
+    # ── Run history ───────────────────────────────────────────────────────────
+    st.markdown("**Run history**")
+    if not past_runs:
+        _state("empty", "No completed runs yet. Set a data source and press "
+                        "Run analysis — results appear here.")
+        return
 
-            form = dict(
-                analysis_mode=("continuous" if _continuous else "reciprocating"),
-                single_file=single_file_path,
-                nominal_rpm=nominal_rpm_val, signal_label=signal_label_val,
-                data_dir=data_dir, output_root=_computed_output_root,
-                parts=parts, rpms=rpms,
-                time_col=time_col, rpm_col=rpm_col, angle_col=angle_col,
-                torque_col=torque_col, accel_cols=accel_cols_map,
-                samples_per_rev=samples_per_rev, ball_pass_order=ball_pass_order,
-                n_bpf_harmonics=n_bpf_harmonics, bp_min_hz=bp_min_hz,
-                bp_min_hz_abs=bp_min_hz_abs,
-                bp_min_bw_hz=bp_min_bw_hz, kurtogram_levels=kurtogram_levels,
-                bp_filter_order=bp_filter_order, min_revolutions=min_revolutions,
-                bp_max_hz=bp_max_hz, plateau_gating=plateau_gating,
-                plateau_frac=plateau_frac,
-                campbell_window_rev=campbell_window_rev,
-                campbell_rpm_bin=campbell_rpm_bin,
-                only_parts=only_parts, only_rpms=only_rpms,
-                render_plots=render_plots,
-            )
-            # Build cfg up-front so path helpers (seg_data_dir) work before the run.
-            cfg = _config_from_form(form)
-            set_active(cfg)
+    for pr in past_runs[:6]:
+        _ok = (pr["stages_ok"] == pr["stages_total"] and pr["stages_total"])
+        with st.container(border=True):
+            hc1, hc2 = st.columns([3, 1])
+            with hc1:
+                st.markdown(f"**{pr['name']}**")
+                st.caption(f"{pr['generated'] or 'unknown date'} · "
+                           + ("✅ all ok" if _ok else
+                              f"⚠ {pr['stages_ok']}/{pr['stages_total']} ok")
+                           + (f" · {len(pr['parts'])} specimen(s)"
+                              if pr["parts"] else ""))
+            with hc2:
+                st.button("View report", key=f"open_{pr['name']}",
+                          width='stretch',
+                          on_click=_open_report, args=(pr["manifest"],))
+                st.button("Load settings", key=f"load_{pr['name']}",
+                          width='stretch', disabled=_busy,
+                          on_click=_load_run_settings,
+                          args=(pr["manifest"],),
+                          help="Re-fill the setup with this run's settings.")
+    if len(past_runs) > 6:
+        st.caption(f"…and {len(past_runs) - 6} more — open any from the "
+                   "Report view's run selector.")
 
-            # A 'segment' run with zero matching raw CSVs is a silent no-op.
-            # (Continuous mode reads one explicit file, so this folder scan is
-            # skipped — validity was already checked by the readiness gating.)
-            if "segment" in chosen and not _continuous:
-                scan = _discover(cfg.data_dir, _dir_mtime(cfg.data_dir))
-                if scan["matched"] == 0:
-                    st.error("No recognized CSV files were found in:\n\n"
-                             f"{cfg.data_dir}\n\nNothing to process.")
-                    st.stop()
-
-            # Segment-first safety: every later stage reads segmented_data.
-            chosen_stages = list(chosen)
-            if ("segment" not in chosen_stages
-                    and not os.path.isdir(seg_data_dir(cfg))):
-                if auto_include_segment:
-                    chosen_stages = ["segment"] + chosen_stages
-                    st.info("Preparing data (segmentation) first so the selected "
-                            "analyses have input.")
-                else:
-                    st.error("This data hasn't been prepared yet. Enable "
-                             "\"Prepare data automatically\", or add the "
-                             "segmentation analysis.")
-                    st.stop()
-
-            # Keep canonical order so segmentation runs first in the child.
-            chosen_stages = [s for s in STAGES if s in chosen_stages]
-
-            # Persist the resolved config next to results (reproducible run).
-            os.makedirs(cfg.output_root, exist_ok=True)
-            cfg_path = os.path.join(cfg.output_root, "nvh_config.json")
-            cfg.to_json(cfg_path)
-            os.environ["NVH_CONFIG"] = os.path.abspath(cfg_path)
-
-            # Spawn the pipeline as a child process and switch to the poller.
-            st.session_state["run_job"] = _spawn_run(
-                os.path.abspath(cfg_path), chosen_stages, cfg.output_root)
-            st.session_state["running"] = True
-            st.rerun()
+    # ── Compare runs ──────────────────────────────────────────────────────────
+    if len(past_runs) >= 2:
+        with st.expander("Compare runs"):
+            st.caption("Key numbers side by side. Pick two or more runs.")
+            _by_name = {pr["name"]: pr for pr in past_runs}
+            picks = st.multiselect("Runs to compare", list(_by_name),
+                                   max_selections=6, key="compare_runs")
+            if len(picks) >= 2:
+                import pandas as _pd
+                rows = []
+                for name in picks:
+                    m = _by_name[name]["manifest"]
+                    row = {"Run": name,
+                           **_run_quick_metrics(m, _dir_mtime(m))}
+                    rows.append(row)
+                st.dataframe(_pd.DataFrame(rows).set_index("Run").T,
+                             width='stretch')
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 3 — Review  (sub-ribbon: Run library · Open runs)
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_review:
-    _screen_header("Review",
-                   "Browse saved runs and explore their results.")
-    _breadcrumb("Review")
-    _opened_count = len([m for m in st.session_state.get("opened_runs", [])
-                         if os.path.isfile(m)])
-    _kpi_row([
-        {"label": "Run library", "value": f"{len(past_runs)} saved"},
-        {"label": "Open runs", "value": str(_opened_count)},
-    ])
+def _page_home() -> None:
+    col_data, col_run, col_status = st.columns([1.0, 1.05, 1.0], gap="medium")
 
-    sub_lib, sub_open = st.tabs(["Run library", "Open runs"])
+    with col_data:
+        with st.container(border=True):
+            _panel_data_source()
 
-    with sub_lib:
-        if not past_runs:
-            _state("empty",
-                   "No saved runs yet. Complete an analysis in the Run tab to "
-                   "get started.")
-        else:
-            # Unified Filters popover + dismissible chips over groups / speeds.
-            _all_groups = sorted({str(g) for pr in past_runs
-                                  for g in pr.get("parts", [])})
-            _all_speeds = sorted({str(s) for pr in past_runs
-                                  for s in pr.get("rpms", [])}, key=str)
-            _flt = ({} if not (_all_groups or _all_speeds)
-                    else _filter_bar({"Group": _all_groups, "Speed": _all_speeds},
-                                     key="lib_filter"))
+    with col_run:
+        with st.container(border=True):
+            chosen, opts = _panel_analyze()
 
-            def _matches(pr):
-                gsel, ssel = _flt.get("Group", []), _flt.get("Speed", [])
-                if gsel and not ({str(g) for g in pr.get("parts", [])} & set(gsel)):
-                    return False
-                if ssel and not ({str(s) for s in pr.get("rpms", [])} & set(ssel)):
-                    return False
-                return True
+            # ── Readiness gating — a clear reason, never a dead button ───────
+            blockers = []
+            if _continuous:
+                if not single_file_path:
+                    blockers.append("choose a CSV file (Data source)")
+                elif not _single_valid:
+                    blockers.append("the CSV file path is not valid")
+                if not (_setup["rpm_col"] or _setup["angle_col"]):
+                    blockers.append("map a speed reference — RPM or angle "
+                                    "(Setup)")
+            else:
+                if not data_dir:
+                    blockers.append("set a data folder (Data source)")
+                elif not os.path.isdir(data_dir):
+                    blockers.append("the data folder path is not valid")
+                elif detected and detected.get("matched", 0) == 0:
+                    blockers.append("no recognized recordings in the folder")
+            if not _setup["accel_cols"]:
+                blockers.append("include at least one vibration signal "
+                                "(Setup)")
+            if not run_name:
+                blockers.append("name the run")
+            if not chosen:
+                blockers.append("select at least one analysis tile")
 
-            _visible = [pr for pr in past_runs if _matches(pr)]
-            if not _visible:
-                _state("empty",
-                       "No saved runs match the active filters. Clear a chip "
-                       "above to widen the search.")
-            # Tile grid — each saved run is a card: status, scope chips, actions.
-            _card_cols = st.columns(3)
-            for _ci, pr in enumerate(_visible[:24]):
-                _ok = pr["stages_ok"] == pr["stages_total"] and pr["stages_total"]
-                _status = ("✅ all analyses ok" if _ok else
-                           f"⚠ {pr['stages_ok']}/{pr['stages_total']} analyses ok")
-                _chips = "".join(
-                    f'<span class="ws-chip">{g}</span>'
-                    for g in list(pr["parts"])[:4])
-                if len(pr["parts"]) > 4:
-                    _chips += f'<span class="ws-chip">+{len(pr["parts"]) - 4}</span>'
-                if pr["rpms"]:
-                    _chips += (f'<span class="ws-chip">{len(pr["rpms"])} '
-                               "speed(s)</span>")
-                with _card_cols[_ci % 3]:
-                    with st.container(border=True):
-                        st.markdown(f"**{pr['name']}**")
-                        st.caption(f"{pr['generated'] or 'unknown date'} · "
-                                   f"{_status}")
-                        if _chips:
-                            st.markdown(_chips, unsafe_allow_html=True)
-                        b1, b2 = st.columns(2)
-                        # Open is read-only (safe mid-run); Load settings
-                        # overwrites the locked form, so it stays disabled
-                        # while a run is in progress.
-                        b1.button("Open", key=f"open_{pr['name']}",
-                                  width='stretch', type="primary",
-                                  on_click=_open_run, args=(pr["manifest"],))
-                        b2.button("Load settings", key=f"load_{pr['name']}",
-                                  width='stretch', disabled=_busy,
-                                  on_click=_load_run_settings,
-                                  args=(pr["manifest"],),
-                                  help="Fill Define & Setup with this run's "
-                                       "settings to re-run or tweak.")
-            st.caption("Opened runs appear in the Open runs tab. "
-                       "Load settings pre-fills Define & Setup.")
+            if _busy:
+                _state("loading",
+                       "An analysis is running — progress is in the "
+                       "Investigate & status panel.")
+            else:
+                if blockers:
+                    st.warning("Before running, please "
+                               + "; ".join(blockers) + ".")
+                if st.button("RUN ANALYSIS", type="primary",
+                             width='stretch', disabled=bool(blockers)):
+                    _run_analysis(chosen, opts)
 
-    with sub_open:
-        # Drop any manifests that have been deleted since last rerun.
-        opened = [m for m in st.session_state.get("opened_runs", [])
-                  if os.path.isfile(m)]
-        st.session_state["opened_runs"] = opened
+    with col_status:
+        with st.container(border=True):
+            _panel_status()
 
-        if not opened:
-            _state("empty",
-                   "Open a run from the Run library tab to view its results here.")
-        else:
-            def _run_label(m):
-                return os.path.basename(os.path.dirname(m)) or m
-            inner = st.tabs([_run_label(m) for m in opened])
-            for ti, (itab, m) in enumerate(zip(inner, opened)):
-                with itab:
-                    # The per-run title, Download config and Close all live in
-                    # the screen-header utility belt inside _render_results.
-                    _render_results(m, key_prefix=f"open{ti}",
-                                    on_close=(lambda mm=m: _close_run(mm)))
+
+# ── Router ─────────────────────────────────────────────────────────────────────
+if _view == "setup":
+    _page_setup()
+elif _view == "report":
+    _page_report()
+else:
+    _page_home()

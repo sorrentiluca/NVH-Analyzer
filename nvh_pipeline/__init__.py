@@ -12,8 +12,7 @@ numerics; this package supplies everything they share:
     campbell     Campbell-diagram building blocks (angular windows, RPM grid)
     runner       stage orchestration, manifest.json, progress events
     app_helpers  pure helpers for the Streamlit front end
-    viz          interactive (Altair) result views for the Review tab
-    famos_entry  the function imc FAMOS calls
+    viz          interactive (Altair) result views for the app
 
 CLI:  python -m nvh_pipeline --config nvh_config.json [--stages a,b,c]
 """

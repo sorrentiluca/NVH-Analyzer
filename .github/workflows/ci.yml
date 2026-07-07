@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install duckdb altair streamlit pytest
+          pip install -e .
+
+      - name: Unit, DSP-validation and golden end-to-end tests
+        run: pytest tests/ -v
+
+      - name: Signable validation report (exact-math gate)
+        run: pytest tests/ -v -m report
+
+      - name: App boots headless
+        run: |
+          python - <<'EOF'
+          from streamlit.testing.v1 import AppTest
+          at = AppTest.from_file("streamlit_app.py", default_timeout=180)
+          at.run()
+          assert not at.exception, [str(e.value) for e in at.exception]
+          print("app boots clean")
+          EOF

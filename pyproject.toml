@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nvh-pipeline"
 version = "0.1.0"
-description = "Ballscrew recirculation NVH analysis pipeline, drivable from imc FAMOS."
+description = "Ballscrew recirculation NVH analysis pipeline with a guided Streamlit front end."
 requires-python = ">=3.9"
 dependencies = [
     "pandas",

@@ -1,0 +1,17 @@
+# App theme — the calm, light visual language the injected CSS is designed
+# around. Pinning it here keeps the look identical on every machine instead
+# of following the OS dark/light preference.
+[theme]
+base = "light"
+primaryColor = "#1E4D3A"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F9F9FB"
+textColor = "#1A1A1E"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Raw recordings never leave this machine; the drag & drop zone accepts
+# multi-hundred-MB DEWESOFT exports.
+maxUploadSize = 2048

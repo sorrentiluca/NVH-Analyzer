@@ -15,7 +15,7 @@ After segmentation the analysis groups are independent (they all read the
 segmented parquets and write disjoint output folders), so ``run_all`` executes
 them in PARALLEL worker processes — wall-clock time approaches the slowest
 group instead of the sum.  Each stage's outputs (PNG/CSV/HTML/PDF produced
-during its run) are collected into the manifest record so the app / FAMOS can
+during its run) are collected into the manifest record so the app can
 display exactly what a run created.
 
 A stage failure never aborts the pipeline: the record carries status 'error'

@@ -86,7 +86,7 @@ class Config:
     bp_min_hz_abs: float  = 50.0   # absolute floor — never search below this Hz
     bp_min_bw_hz: float   = 200.0
     # MUST match PipelineConfig.kurtogram_levels (nvh_pipeline/config.py) so a
-    # standalone run and a pipeline/FAMOS run select bands identically.
+    # standalone run and a pipeline run select bands identically.
     kurtogram_levels: int = 4
     bp_filter_order: int  = 4
 

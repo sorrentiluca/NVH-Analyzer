@@ -3,8 +3,8 @@ CLI:  python -m nvh_pipeline [--config nvh_config.json] [--stages a,b,c]
                              [--data-dir DIR] [--progress-file PATH]
       python -m nvh_pipeline --write-example nvh_config.json
 
-Exit code = number of failed stages (0 = clean run), so it doubles as a CI /
-FAMOS success check.
+Exit code = number of failed stages (0 = clean run), so it doubles as a CI
+success check.
 """
 
 from __future__ import annotations

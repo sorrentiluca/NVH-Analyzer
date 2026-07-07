@@ -4,7 +4,7 @@ deterministic synthetic dataset with KNOWN injected content, then assert on the
 OUTPUT artifacts — manifest.json and the result CSVs — not internals.
 
 Running through the real CLI in a SUBPROCESS (rather than calling run_stage
-in-process) is both more faithful — it exercises the exact entry point FAMOS and
+in-process) is both more faithful — it exercises the exact entry point
 operators use, including manifest.json writing and the ProcessPoolExecutor — and
 necessary for isolation: other test modules stub ``matplotlib`` with a MagicMock
 at import time, which would break the in-process plotting stages.  A fresh

@@ -151,7 +151,7 @@ class Config:
     # Kurtogram frequency resolution levels.  Higher = finer search but slower.
     # Each level halves the bandwidth: level 1 = fs/4, level 2 = fs/8, etc.
     # MUST match PipelineConfig.kurtogram_levels (nvh_pipeline/config.py) so a
-    # standalone run and a pipeline/FAMOS run select bands identically.
+    # standalone run and a pipeline run select bands identically.
     kurtogram_levels: int = 6
 
     # Minimum bandwidth to consider [Hz].  Kept at 200 (not lowered with the level

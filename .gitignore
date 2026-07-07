@@ -25,5 +25,8 @@ manifest.json
 testdata/
 results_smoke/
 
+# Generated teaching workspace (recreate with the in-app Demo workspace button)
+demo_workspace/
+
 # Standalone Windows app build output (regenerate with packaging/build_windows_app.ps1)
 dist/
